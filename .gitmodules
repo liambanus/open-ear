@@ -1,0 +1,3 @@
+[submodule "external/speech-to-text"]
+	path = external/speech-to-text
+	url = https://gitlab.arm.com/kleidi/kleidi-examples/speech-to-text.git
