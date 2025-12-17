@@ -1,0 +1,10 @@
+<resources>
+  <style name="Theme.Maestro" parent="android:Theme.DeviceDefault.NoActionBar">
+
+  <!-- TODO Customize here if needed or remove -->
+    </style>
+
+    <!-- AppCompat fallback (requires appcompat dependency)
+    <style name="Theme.Maestro" parent="Theme.AppCompat.Light.NoActionBar" />
+    -->
+</resources>

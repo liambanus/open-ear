@@ -1,0 +1,50 @@
+<!-- Changes made to solve: ERROR: /home/joe/repos/open-ear/maestro/src/main/AndroidManifest.xml:10:5-29:19: AAPT: error: resource string/app_name (aka com.openear.maestro:string/app_name) not found.
+
+     ERROR: /home/joe/repos/open-ear/maestro/src/main/AndroidManifest.xml:10:5-29:19: AAPT: error: resource style/Theme.AppCompat.Light.NoActionBar (aka com.openear.maestro:style/Theme.AppCompat.Light.NoActionBar) not found.
+         -->
+<!--<manifest xmlns:android="http://schemas.android.com/apk/res/android"-->
+<!--    package="com.openear.maestro">-->
+
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Permissions for audio recording and to run in the background -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+
+<!--    <application-->
+<!--        android:label="@string/app_name"-->
+<!--        android:theme="@style/Theme.AppCompat.Light.NoActionBar">-->
+  <application
+    android:label="@string/app_name"
+    android:theme="@style/Theme.Maestro">
+    <!-- AppCompat fallback:
+    android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+    -->
+    <activity
+      android:name=".MainActivity"
+      android:exported="true">
+    <!-- AppCompat fallback:
+    android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+    -->
+
+<!--    <activity-->
+<!--            android:name=".MainActivity"-->
+<!--            android:exported="true"-->
+<!--            android:theme="@style/Theme.AppCompat.Light.NoActionBar">-->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- (Optional) Define a Foreground Service for background operation -->
+        <!--
+        <service
+            android:name=".AudioService"
+            android:foregroundServiceType="microphone" />
+        -->
+    </application>
+
+</manifest>
