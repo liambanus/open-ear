@@ -1,3 +1,32 @@
+<!--
+ANDROID 12+ FOREGROUND SERVICE & PERMISSION NOTES (IMPORTANT):
+
+1) Foreground service startup timing:
+   Any Service declared with android:foregroundServiceType="microphone"
+   MUST call startForeground(notificationId, notification) very quickly
+   after onStartCommand() is invoked (within ~5 seconds).
+
+   Failure to do so will cause a runtime crash on Android 12+ devices
+   (ForegroundServiceStartNotAllowedException), even if the manifest
+   declaration is correct.
+
+2) Visible notification requirement:
+   The foreground notification MUST be visible and clearly explain
+   why the microphone is in use (e.g. "Listening for voice commands").
+   Silent or hidden notifications are not permitted for microphone access.
+
+3) Runtime permission still required:
+   Declaring android.permission.RECORD_AUDIO in the manifest is NOT enough.
+   The app must explicitly request RECORD_AUDIO at runtime before starting
+   the service. If permission is denied, the service must not start or
+   attempt to access the microphone, or a SecurityException will occur.
+
+4) Order of operations (recommended):
+   - Request and verify RECORD_AUDIO permission in an Activity
+   - Start the foreground service only after permission is granted
+   - Call startForeground() immediately inside onStartCommand()
+-->
+
 <!-- Changes made to solve: ERROR: /home/joe/repos/open-ear/maestro/src/main/AndroidManifest.xml:10:5-29:19: AAPT: error: resource string/app_name (aka com.openear.maestro:string/app_name) not found.
 
      ERROR: /home/joe/repos/open-ear/maestro/src/main/AndroidManifest.xml:10:5-29:19: AAPT: error: resource style/Theme.AppCompat.Light.NoActionBar (aka com.openear.maestro:style/Theme.AppCompat.Light.NoActionBar) not found.
@@ -9,16 +38,27 @@
 
     <!-- Permissions for audio recording and to run in the background -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+  <uses-feature
+    android:name="android.hardware.microphone"
+    android:required="true" />
 
-<!--    <application-->
+
+  <!--    <application-->
 <!--        android:label="@string/app_name"-->
 <!--        android:theme="@style/Theme.AppCompat.Light.NoActionBar">-->
   <application
     android:label="@string/app_name"
     android:theme="@style/Theme.Maestro">
+
+    <service
+      android:name="com.openear.maestro.service.VoiceControlService"
+      android:exported="false"
+      android:foregroundServiceType="microphone" />
+
     <!-- AppCompat fallback:
     android:theme="@style/Theme.AppCompat.Light.NoActionBar"
     -->

@@ -1,142 +1,91 @@
 package com.openear.maestro.ui
 
 import android.content.Context
-import android.media.MediaPlayer
-import android.util.Log
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.delay
+import com.openear.maestro.service.VoiceControlService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-
-data class MaestroUiState(
-    val showMainMenu: Boolean = true,
-    val userMessage: String = "Press 'Chord Progression' to start.",
-    val isListening: Boolean = false,
-    val isFinished: Boolean = false,
-)
 
 class MaestroViewModel : ViewModel() {
-    private val _uiState = MutableStateFlow(MaestroUiState())
-    val uiState: StateFlow<MaestroUiState> = _uiState.asStateFlow()
 
-    private var sttModule: Any? = null // Stub for your STT module
-    private lateinit var assetPlayer: AssetPlayer
+  private val _uiState = MutableStateFlow(MaestroUiState())
+  val uiState: StateFlow<MaestroUiState> = _uiState.asStateFlow()
 
-    // Exercise details
-    private val correctProgression = listOf("C", "F", "G", "F")
-    private val correctAnswer = "1454"
+  private var voiceControlPort: VoiceControlService.Port? = null
 
-    fun initialize(context: Context) {
-        assetPlayer = AssetPlayer(context.applicationContext)
-        // TODO: Initialize STT module
-        // try {
-        //     sttModule = SttModule(context)
-        // } catch (e: Exception) {
-        //     Log.e("ViewModel", "Failed to initialize STT module", e)
-        //     // Update UI to show error
-        // }
-    }
+  /* -----------------------------
+   * Initialization
+   * ----------------------------- */
 
-    fun startChordProgressionExercise() {
-        _uiState.update {
-            it.copy(
-                showMainMenu = false,
-                userMessage = "Listen to the progression."
-            )
-        }
-        requestProgressionPlayback()
-    }
+  fun initialize(context: Context) {
+    // Perform one-time setup here if needed
+    // (audio engine, assets, etc.)
+  }
 
-    fun requestProgressionPlayback() {
-        viewModelScope.launch {
-            playProgression(correctProgression)
-            _uiState.update { it.copy(userMessage = "What progression did you hear?") }
-            // Start listening automatically after playback
-            // For now, we rely on manual input
-        }
-    }
+  fun setVoiceControlPort(port: VoiceControlService.Port) {
+    voiceControlPort = port
+  }
 
-    private suspend fun playProgression(progression: List<String>) {
-        for (chord in progression) {
-            Log.d("ViewModel", "Playing chord: $chord")
-            assetPlayer.playChord(chord, "piano")
-            delay(1500) // Delay between chords
-        }
-        Log.d("ViewModel", "Progression finished")
-    }
+  /* -----------------------------
+   * Navigation / Flow
+   * ----------------------------- */
 
-    fun checkTextAnswer(answer: String) {
-        if (answer.replace("\\s".toRegex(), "") == correctAnswer) {
-            _uiState.update { it.copy(isFinished = true) }
-        } else {
-            _uiState.update { it.copy(userMessage = "Not quite. Try again.") }
-            requestProgressionPlayback()
-        }
-    }
-
-    // STUB for voice recognition
-    fun startListening() {
-        _uiState.update { it.copy(isListening = true, userMessage = "Listening...") }
-        viewModelScope.launch {
-            delay(2000) // Initial delay
-            // sttModule.startRecording(...)
-            delay(5000) // Record for 5 seconds
-            // val transcript = sttModule.stopRecording()
-            val transcript = "1 4 5 4" // MOCK TRANSCRIPT
-            processTranscript(transcript)
-        }
-    }
-
-    private fun processTranscript(transcript: String) {
-        _uiState.update { it.copy(isListening = false) }
-        val sanitized = transcript.lowercase().replace("\\s".toRegex(), "")
-        Log.d("ViewModel", "Processing transcript: '$sanitized'")
-
-        if (sanitized.contains("repeat")) {
-            _uiState.update { it.copy(userMessage = "Repeating progression.") }
-            requestProgressionPlayback()
-        } else if (sanitized == correctAnswer) {
-            _uiState.update { it.copy(isFinished = true) }
-        } else {
-            _uiState.update { it.copy(userMessage = "Not quite. Try again.") }
-            requestProgressionPlayback()
-        }
-    }
-
-    fun reset() {
-        _uiState.value = MaestroUiState()
-    }
-}
-
-// STUB for AssetPlayer - This needs to be implemented to play sounds from assets
-class AssetPlayer(private val context: Context) {
-    private val chordMap = mapOf(
-        "C" to listOf("C4.mp3", "E4.mp3", "G4.mp3"),
-        "F" to listOf("F4.mp3", "A4.mp3", "C5.mp3"),
-        "G" to listOf("G4.mp3", "B4.mp3", "D5.mp3")
+  fun startChordProgressionExercise() {
+    _uiState.value = _uiState.value.copy(
+      showMainMenu = false,
+      userMessage = "Listen to the progression and enter your answer."
     )
 
-    suspend fun playChord(chord: String, instrument: String) {
-        val notes = chordMap[chord] ?: return
-        notes.map { noteFile ->
-            MediaPlayer().apply {
-                try {
-                    val afd = context.assets.openFd("$instrument/$noteFile")
-                    setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-                    afd.close()
-                    prepare()
-                } catch (e: Exception) {
-                    Log.e("AssetPlayer", "Error preparing sound $noteFile", e)
-                }
-            }
-        }.forEach { mediaPlayer ->
-            mediaPlayer.start()
-            mediaPlayer.setOnCompletionListener { it.release() }
-        }
-        delay(1000) // Duration of the chord
+    // Trigger playback if needed
+    requestProgressionPlayback()
+  }
+
+  fun reset() {
+    _uiState.value = MaestroUiState()
+  }
+
+  /* -----------------------------
+   * Exercise Logic
+   * ----------------------------- */
+
+//  fun requestProgressionPlayback() {
+//    // Stub: talk to audio engine / service later
+//    // voiceControlPort can be used here when implemented
+//  }
+
+  fun requestProgressionPlayback() {
+    android.util.Log.d("VOICE", "requestProgressionPlayback called, port=$voiceControlPort")
+    val port = voiceControlPort ?: return
+
+    // TEMP STUB: start voice listening immediately
+    port.beginListening(
+      expectedProgression = listOf("I", "V", "vi", "IV"),
+      onRepeat = {
+        android.util.Log.d("VOICE", "repeat")
+      },
+      onCorrect = {
+        android.util.Log.d("VOICE", "correct")
+      },
+      onUnknown = {
+        android.util.Log.d("VOICE", "unknown")
+      }
+    )
+  }
+
+
+  fun checkTextAnswer(answer: String) {
+    val isCorrect = answer.trim() == _uiState.value.correctAnswer
+
+    _uiState.value = if (isCorrect) {
+      _uiState.value.copy(
+        isFinished = true,
+        userMessage = "Correct!"
+      )
+    } else {
+      _uiState.value.copy(
+        userMessage = "Try again."
+      )
     }
+  }
 }
