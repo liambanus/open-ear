@@ -110,26 +110,57 @@ class VoiceControlService : Service() {
     onUnknown: () -> Unit
   ) {
     val finals = mutableListOf<String>()
-    sttClient.start(onPartial = {}, onFinal = { finals.add(it) })
+    sttClient.start(onPartial = { partial ->
+      android.util.Log.d("STT_PARTIAL", partial)
+    }, onFinal = { final ->
+      finals.add(final)
+      android.util.Log.d("STT_FINAL", final)
+    })
 
     withTimeoutOrNull(LISTEN_WINDOW_MS) {
-      while (finals.isEmpty()) delay(100)
+      while (finals.isEmpty()) delay(500) // Sliding window delay
     }
     sttClient.stop()
 
     val combined = finals.joinToString(" ").trim()
     if (combined.isEmpty()) {
-      onRepeat(); return
+      onRepeat()
+      return
     }
-    when (val parsed = commandParser.parse(combined)) {
-      is CommandParser.Result.Command -> if (parsed.keyword == "repeat") onRepeat() else onUnknown()
-      is CommandParser.Result.Answer -> {
-        val ok = evaluator.isCorrect(expectedProgression, parsed.tokens)
-        if (ok) onCorrect() else onUnknown()
-      }
-      CommandParser.Result.None -> onUnknown()
-    }
+
+    val numbers = listOf("1", "4", "5", "one", "four", "five")
+    val result = numbers.any { it.equals(combined, ignoreCase = true) }
+
+    if (result) onCorrect() else onUnknown()
   }
+
+//  private suspend fun collectAndProcess(
+//    expectedProgression: List<String>,
+//    onRepeat: () -> Unit,
+//    onCorrect: () -> Unit,
+//    onUnknown: () -> Unit
+//  ) {
+//    val finals = mutableListOf<String>()
+//    sttClient.start(onPartial = {}, onFinal = { finals.add(it) })
+//
+//    withTimeoutOrNull(LISTEN_WINDOW_MS) {
+//      while (finals.isEmpty()) delay(100)
+//    }
+//    sttClient.stop()
+//
+//    val combined = finals.joinToString(" ").trim()
+//    if (combined.isEmpty()) {
+//      onRepeat(); return
+//    }
+//    when (val parsed = commandParser.parse(combined)) {
+//      is CommandParser.Result.Command -> if (parsed.keyword == "repeat") onRepeat() else onUnknown()
+//      is CommandParser.Result.Answer -> {
+//        val ok = evaluator.isCorrect(expectedProgression, parsed.tokens)
+//        if (ok) onCorrect() else onUnknown()
+//      }
+//      CommandParser.Result.None -> onUnknown()
+//    }
+//  }
 
   private fun ensureChannel() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

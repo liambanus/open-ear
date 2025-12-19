@@ -88,4 +88,26 @@ class MaestroViewModel : ViewModel() {
       )
     }
   }
+
+  fun toggleVoiceRecording(isRecording: Boolean) {
+    if (isRecording) {
+      startVoiceListening()
+    } else {
+      stopVoiceListening()
+    }
+  }
+
+  private fun startVoiceListening() {
+    android.util.Log.d("VOICE_CONTROL", "Started voice listening.")
+    voiceControlPort?.beginListening(
+      expectedProgression = listOf("one", "four", "five"),
+      onRepeat = { updateMessage("Please repeat.") },
+      onCorrect = { updateMessage("Correct match found!") },
+      onUnknown = { updateMessage("No match.") }
+    )
+  }
+
+  private fun stopVoiceListening() {
+    android.util.Log.d("VOICE_CONTROL", "Stopped voice listening.")
+  }
 }
