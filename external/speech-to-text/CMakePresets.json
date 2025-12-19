@@ -1,0 +1,86 @@
+{
+  "version": 4,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 27,
+    "patch": 0
+  },
+  "include": [
+    "scripts/cmake/toolchains/toolchain-presets.json",
+    "scripts/cmake/configuration-presets.json"
+  ],
+  "configurePresets": [
+    {
+      "name": "elinux-aarch64-release-with-tests",
+      "inherits": [
+        "aarch64-elinux-gnu-toolchain",
+        "build-type-rel",
+        "unit-tests-enabled",
+        "build-shared-disabled"
+      ]
+    },
+    {
+      "name": "elinux-aarch64-release-without-tests",
+      "inherits": [
+        "aarch64-elinux-gnu-toolchain",
+        "build-type-rel",
+        "unit-tests-disabled",
+        "build-shared-disabled"
+      ]
+    },
+    {
+      "name": "elinux-aarch64-debug-with-tests",
+      "inherits": [
+        "aarch64-elinux-gnu-toolchain",
+        "build-type-dbg",
+        "unit-tests-enabled",
+        "build-shared-disabled"
+      ]
+    },
+    {
+      "name": "elinux-aarch64-debug-without-tests",
+      "inherits": [
+        "aarch64-elinux-gnu-toolchain",
+        "build-type-dbg",
+        "unit-tests-disabled",
+        "build-shared-disabled"
+      ]
+    },
+    {
+      "name": "native-release-with-tests",
+      "inherits": [
+        "native-gnu-toolchain",
+        "build-type-rel",
+        "unit-tests-enabled",
+        "build-shared-disabled"
+      ]
+    },
+    {
+      "name": "native-release-without-tests",
+      "inherits": [
+        "native-gnu-toolchain",
+        "build-type-rel",
+        "unit-tests-disabled",
+        "build-shared-disabled"
+      ]
+    },
+    {
+      "name": "native-debug-with-tests",
+      "inherits": [
+        "native-gnu-toolchain",
+        "build-type-dbg",
+        "unit-tests-enabled",
+        "build-shared-disabled"
+      ]
+    },
+    {
+      "name": "native-debug-without-tests",
+      "inherits": [
+        "native-gnu-toolchain",
+        "build-type-dbg",
+        "unit-tests-disabled",
+        "build-shared-disabled"
+      ]
+    }
+  ]
+}

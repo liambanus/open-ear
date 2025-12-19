@@ -55,3 +55,6 @@ maestro/
 node_modules/
 node-modules/
 .gradle
+
+external/speech-to-text/build-android/
+external/speech-to-text/resources_downloaded/models/*.bin
