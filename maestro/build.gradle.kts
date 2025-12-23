@@ -16,15 +16,15 @@ android {
     targetSdk = 34
     ndkVersion = "27.0.12077973"
 
-    externalNativeBuild {
-      cmake {
-        arguments(
-          "-DBUILD_JNI_LIB=ON",
-          "-DBUILD_SHARED_LIBS=OFF",
-          "-DGGML_CPU_KLEIDIAI=OFF"
-        )
-      }
-    }
+//    externalNativeBuild {
+//      cmake {
+//        arguments(
+//          "-DBUILD_JNI_LIB=ON",
+//          "-DBUILD_SHARED_LIBS=OFF",
+//          "-DGGML_CPU_KLEIDIAI=OFF"
+//        )
+//      }
+//    }
 
     ndk {
       abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
@@ -47,12 +47,12 @@ android {
     }
   }
 
-  externalNativeBuild {
-    cmake {
-      path = file("../external/speech-to-text/CMakeLists.txt")
-      version = "3.27.0+"
-    }
-  }
+//  externalNativeBuild {
+//    cmake {
+//      path = file("../external/speech-to-text/CMakeLists.txt")
+//      version = "3.27.0+"
+//    }
+//  }
 
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -63,7 +63,7 @@ android {
 }
 
 dependencies {
-  implementation(project(":external:speech-to-text"))
+//  implementation(project(":external:speech-to-text"))
 
   implementation("androidx.core:core-ktx:1.13.1")
   implementation("androidx.activity:activity-compose:1.9.3")

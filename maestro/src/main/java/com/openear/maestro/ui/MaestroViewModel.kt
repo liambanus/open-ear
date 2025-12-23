@@ -6,21 +6,38 @@ import com.openear.maestro.service.VoiceControlService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.lifecycle.viewModelScope
+import android.util.Log
+
+import android.media.MediaPlayer
+
 
 class MaestroViewModel : ViewModel() {
 
   private val _uiState = MutableStateFlow(MaestroUiState())
   val uiState: StateFlow<MaestroUiState> = _uiState.asStateFlow()
 
+  private lateinit var assetPlayer: AssetPlayer
   private var voiceControlPort: VoiceControlService.Port? = null
+
+  // Added state to store the result of transcription (correct/incorrect feedback)
+  private val _transcriptionResult = MutableStateFlow("")
+  val transcriptionResult: StateFlow<String> = _transcriptionResult.asStateFlow()
 
   /* -----------------------------
    * Initialization
    * ----------------------------- */
-
   fun initialize(context: Context) {
-    // Perform one-time setup here if needed
-    // (audio engine, assets, etc.)
+    assetPlayer = AssetPlayer(context.applicationContext)
+  }
+
+  private suspend fun playProgression(progression: List<String>) {
+    for (chord in progression) {
+      assetPlayer.playChord(chord, "piano")
+      delay(500) // gap between chords
+    }
   }
 
   fun setVoiceControlPort(port: VoiceControlService.Port) {
@@ -49,30 +66,70 @@ class MaestroViewModel : ViewModel() {
    * Exercise Logic
    * ----------------------------- */
 
-//  fun requestProgressionPlayback() {
-//    // Stub: talk to audio engine / service later
-//    // voiceControlPort can be used here when implemented
-//  }
-
   fun requestProgressionPlayback() {
-    android.util.Log.d("VOICE", "requestProgressionPlayback called, port=$voiceControlPort")
     val port = voiceControlPort ?: return
 
-    // TEMP STUB: start voice listening immediately
-    port.beginListening(
-      expectedProgression = listOf("I", "V", "vi", "IV"),
-      onRepeat = {
-        android.util.Log.d("VOICE", "repeat")
-      },
-      onCorrect = {
-        android.util.Log.d("VOICE", "correct")
-      },
-      onUnknown = {
-        android.util.Log.d("VOICE", "unknown")
-      }
+    _uiState.value = _uiState.value.copy(
+      userMessage = "Listen to the progression...",
+      isListening = false
     )
+
+    viewModelScope.launch {
+      // 1️⃣ Play the progression audio
+      playProgression(listOf("1", "4", "5", "4"))
+
+      // 2️⃣ Wait 1 second AFTER playback finishes
+      delay(1000)
+
+      // 3️⃣ Begin recording
+      _uiState.value = _uiState.value.copy(
+        userMessage = "Now say the progression",
+        isListening = true
+      )
+
+      port.beginListening(
+        expectedProgression = listOf("1", "4", "5", "4"),
+        onCorrect = {
+          _uiState.value = _uiState.value.copy(
+            isFinished = true,
+            isListening = false,
+            userMessage = "Correct!"
+          )
+        }
+      )
+    }
   }
 
+
+//  fun requestProgressionPlayback() {
+//    android.util.Log.d("VOICE", "requestProgressionPlayback called, port=$voiceControlPort")
+//    val port = voiceControlPort ?: return
+//
+//    // TEMP STUB: start voice listening immediately
+//    port.beginListening(
+//      expectedProgression = listOf("1", "4", "5", "4"),
+//      onCorrect = {
+//        android.util.Log.d("VOICE", "correct")
+//        _uiState.value = _uiState.value.copy(
+//          isFinished = true,
+//          userMessage = "Correct!"
+//        )
+//      }
+//    )
+
+//    port.beginListening(
+////      expectedProgression = listOf("I", "V", "vi", "IV"),
+//      expectedProgression = listOf("1", "4", "5", "4"),
+//      onRepeat = {
+//        android.util.Log.d("VOICE", "repeat")
+//      },
+//      onCorrect = {
+//        android.util.Log.d("VOICE", "correct")
+//      },
+//      onUnknown = {
+//        android.util.Log.d("VOICE", "unknown")
+//      }
+//    )
 
   fun checkTextAnswer(answer: String) {
     val isCorrect = answer.trim() == _uiState.value.correctAnswer
@@ -89,25 +146,80 @@ class MaestroViewModel : ViewModel() {
     }
   }
 
+//  fun toggleVoiceRecording(isRecording: Boolean) {
+//    if (isRecording) {
+//      startVoiceListening()
+//    } else {
+//      stopVoiceListening()
+//    }
+//  }
+
   fun toggleVoiceRecording(isRecording: Boolean) {
     if (isRecording) {
       startVoiceListening()
-    } else {
-      stopVoiceListening()
     }
   }
+
 
   private fun startVoiceListening() {
     android.util.Log.d("VOICE_CONTROL", "Started voice listening.")
     voiceControlPort?.beginListening(
-      expectedProgression = listOf("one", "four", "five"),
-      onRepeat = { updateMessage("Please repeat.") },
-      onCorrect = { updateMessage("Correct match found!") },
-      onUnknown = { updateMessage("No match.") }
+      expectedProgression = listOf("1", "4", "5", "4"),
+      onCorrect = {
+        updateTranscriptionResult("Correct!")
+        _uiState.value = _uiState.value.copy(
+          isFinished = true,
+          userMessage = "Correct!"
+        )
+      }
     )
   }
 
+//  private fun startVoiceListening() {
+//    android.util.Log.d("VOICE_CONTROL", "Started voice listening.")
+//    voiceControlPort?.beginListening(
+//      expectedProgression = listOf("1", "4", "5", "4"), // Correct answer sequence
+//      onRepeat = { updateTranscriptionResult("No audio detected. Please repeat.") },
+//      onCorrect = { updateTranscriptionResult("Correct!") },
+//      onUnknown = { updateTranscriptionResult("Incorrect. Try again.") }
+//    )
+//  }
+
   private fun stopVoiceListening() {
     android.util.Log.d("VOICE_CONTROL", "Stopped voice listening.")
+  }
+
+  // Helper method to update transcription results
+  private fun updateTranscriptionResult(message: String) {
+    _transcriptionResult.value = message
+  }
+}
+
+
+class AssetPlayer(private val context: Context) {
+
+  private val chordMap = mapOf(
+    "1" to listOf("C4.mp3", "E4.mp3", "G4.mp3"),
+    "4" to listOf("F4.mp3", "A4.mp3", "C5.mp3"),
+    "5" to listOf("G4.mp3", "B4.mp3", "D5.mp3")
+  )
+
+  suspend fun playChord(chord: String, instrument: String) {
+    val notes = chordMap[chord] ?: return
+
+    notes.map { noteFile ->
+      MediaPlayer().apply {
+        val afd = context.assets.openFd("$instrument/$noteFile")
+        Log.d("AUDIO", "Opened asset $instrument/$noteFile")
+        setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+        afd.close()
+        prepare()
+      }
+    }.forEach { mp ->
+      mp.start()
+      mp.setOnCompletionListener { it.release() }
+    }
+
+    delay(1000) // chord duration
   }
 }

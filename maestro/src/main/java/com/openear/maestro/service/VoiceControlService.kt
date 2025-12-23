@@ -10,33 +10,55 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.arm.stt.Whisper
+import com.arm.stt.WhisperConfig
+
 import com.openear.maestro.data.CommandParser
 import com.openear.maestro.data.ProgressionAnswerEvaluator
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
-import com.arm.stt.Whisper
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import java.io.File
+import kotlin.math.sqrt
+import java.util.concurrent.Executors
+
+private const val TAG = "VoiceControl"
 
 private const val VOICE_CHANNEL_ID = "maestro_voice_channel"
 private const val VOICE_NOTIFICATION_ID = 101
 private const val LISTEN_DELAY_MS = 500L
 private const val LISTEN_WINDOW_MS = 5000L
+private const val MODEL_PATH = "/data/local/tmp/model.bin"
+
+private const val SAMPLE_RATE = 16000
+private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
+private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
 
 class VoiceControlService : Service() {
+
+//  interface Port {
+//    fun beginListening(
+//      expectedProgression: List<String>,
+//      onRepeat: () -> Unit,
+//      onCorrect: () -> Unit,
+//      onUnknown: () -> Unit
+//    )
+//  }
 
   interface Port {
     fun beginListening(
       expectedProgression: List<String>,
-      onRepeat: () -> Unit,
-      onCorrect: () -> Unit,
-      onUnknown: () -> Unit
+      onCorrect: () -> Unit
     )
   }
+
 
   inner class VoiceBinder : Binder() {
     fun port(): Port = portImpl
@@ -44,43 +66,154 @@ class VoiceControlService : Service() {
 
   private val binder = VoiceBinder()
   private val scope = CoroutineScope(Dispatchers.IO)
+  private val whisperDispatcher =
+    Executors.newSingleThreadExecutor { runnable ->
+      Thread(runnable, "WhisperThread").apply {
+        isDaemon = true
+      }
+    }.asCoroutineDispatcher()
+
   private lateinit var commandParser: CommandParser
   private val evaluator = ProgressionAnswerEvaluator()
   private var wakeLock: PowerManager.WakeLock? = null
   private var listenJob: Job? = null
 
-  // TODO: replace stub with JNI-backed client from external STT module
-  private val sttClient: SttClient = SttClientStub()
+  private lateinit var whisper: Whisper
+  private var whisperContext: Long = 0L
+  private val whisperReady = CompletableDeferred<Unit>()
+
+  private val whisperMutex = Mutex()
 
   private val portImpl = object : Port {
+
     override fun beginListening(
       expectedProgression: List<String>,
-      onRepeat: () -> Unit,
-      onCorrect: () -> Unit,
-      onUnknown: () -> Unit
+      onCorrect: () -> Unit
     ) {
       listenJob?.cancel()
       listenJob = scope.launch {
         delay(LISTEN_DELAY_MS)
-        collectAndProcess(expectedProgression, onRepeat, onCorrect, onUnknown)
+
+        while (isActive) {
+          val result = collectAndProcessOnce(expectedProgression)
+          when (result) {
+            ListenResult.CORRECT -> {
+              onCorrect()
+              return@launch
+            }
+            ListenResult.REPEAT,
+            ListenResult.INCORRECT -> {
+              delay(300) // retry
+            }
+          }
+        }
       }
     }
   }
 
+
+//  private val portImpl = object : Port {
+//    override fun beginListening(
+//      expectedProgression: List<String>,
+//      onCorrect: () -> Unit
+//    ) {
+//      listenJob?.cancel()
+//      listenJob = scope.launch {
+//        delay(LISTEN_DELAY_MS)
+//
+//        while (isActive) {
+//          val result = collectAndProcessOnce(expectedProgression)
+//          when (result) {
+//            ListenResult.CORRECT -> {
+//              onCorrect()
+//              return@launch
+//            }
+//            ListenResult.REPEAT,
+//            ListenResult.INCORRECT -> {
+//              // loop retries automatically
+//              delay(300)
+//            }
+//          }
+//        }
+//      }
+//    }
+
+//    override fun beginListening(
+//      expectedProgression: List<String>,
+//      onRepeat: () -> Unit,
+//      onCorrect: () -> Unit,
+//      onUnknown: () -> Unit
+//    ) {
+//      listenJob?.cancel()
+//      listenJob = scope.launch {
+//        delay(LISTEN_DELAY_MS)
+//        collectAndProcess(expectedProgression, onRepeat, onCorrect, onUnknown)
+//      }
+//    }
+//  }
+
   override fun onCreate() {
     super.onCreate()
-    try {
-      val w = Whisper()
-      // Use a dummy path to confirm the JNI symbol is found; it will likely throw if file missing.
-      // Swap with a real model path when ready.
-      val ctx = w.initContext("/data/local/tmp/model.bin")
-      android.util.Log.d("JNI_TEST", "initContext returned $ctx")
-    } catch (t: Throwable) {
-      android.util.Log.e("JNI_TEST", "load/call failed", t)
-    }
+
     commandParser = CommandParser(this)
+
+    val modelFile = File(MODEL_PATH)
+    Log.i(TAG, "Model path=$MODEL_PATH exists=${modelFile.exists()} size=${modelFile.length()}")
+
+//    try {
+//      whisper = Whisper()
+//      whisperContext = whisper.initContext(MODEL_PATH)
+//      Log.i(TAG, "Whisper context initialized: ctx=$whisperContext thread=${Thread.currentThread().id}")
+//    } catch (t: Throwable) {
+//      Log.e(TAG, "Failed to initialize Whisper context", t)
+//    }
+//    scope.launch(whisperDispatcher) {
+//      try {
+//        whisper = Whisper()
+//        whisperContext = whisper.initContext(MODEL_PATH)
+//        Log.i(
+//          TAG,
+//          "Whisper context initialized: ctx=$whisperContext thread=${Thread.currentThread().id}"
+//        )
+//      } catch (t: Throwable) {
+//        Log.e(TAG, "Failed to initialize Whisper context", t)
+//      }
+//    }
+    scope.launch(whisperDispatcher) {
+      try {
+        whisper = Whisper()
+        whisperContext = whisper.initContext(MODEL_PATH)
+
+        // REQUIRED: init params before first inference
+        whisper.initParameters(
+          WhisperConfig(
+            false,  // printRealTime
+            false,  // printProgress
+            false,  // timeStamps
+            false,  // printSpecial
+            false,  // translate
+            "en",   // language
+            2,      // numThreads (keep small for POC)
+            0,      // offsetMs
+            false,  // noContext
+            true    // singleSegment
+          )
+        )
+
+        Log.i(
+          TAG,
+          "Whisper context initialized: ctx=$whisperContext thread=${Thread.currentThread().id}"
+        )
+        whisperReady.complete(Unit)
+      } catch (t: Throwable) {
+        whisperReady.completeExceptionally(t)
+        Log.e(TAG, "Failed to initialize Whisper context", t)
+      }
+    }
+
+
+
     ensureChannel()
-//    startForeground(VOICE_NOTIFICATION_ID, buildNotification("Listening for your answer…"))
     acquireWakeLock()
   }
 
@@ -92,47 +225,48 @@ class VoiceControlService : Service() {
     return START_STICKY
   }
 
-
   override fun onDestroy() {
     listenJob?.cancel()
-    sttClient.stop()
-    releaseWakeLock()
     scope.cancel()
+
+//    if (whisperContext != 0L) {
+//      try {
+//        whisper.freeContext(whisperContext)
+//        Log.i(TAG, "Whisper context freed: ctx=$whisperContext")
+//      } catch (t: Throwable) {
+//        Log.e(TAG, "Failed to free Whisper context", t)
+//      }
+//    }
+
+    scope.launch(whisperDispatcher) {
+      whisperReady.await()
+
+//      try {
+//        whisperReady.await()
+//      } catch (t: Throwable) {
+//        Log.e(TAG, "Whisper not ready", t)
+//        onRepeat()
+//        return
+//      }
+
+//      if (whisperContext != 0L) {
+//        try {
+//          whisper.freeContext(whisperContext)
+//          Log.i(
+//            TAG,
+//            "Whisper context freed: ctx=$whisperContext thread=${Thread.currentThread().id}"
+//          )
+//        } catch (t: Throwable) {
+//          Log.e(TAG, "Failed to free Whisper context", t)
+//        }
+//      }
+    }
+
+    releaseWakeLock()
     super.onDestroy()
   }
 
   override fun onBind(intent: Intent?): IBinder = binder
-
-  private suspend fun collectAndProcess(
-    expectedProgression: List<String>,
-    onRepeat: () -> Unit,
-    onCorrect: () -> Unit,
-    onUnknown: () -> Unit
-  ) {
-    val finals = mutableListOf<String>()
-    sttClient.start(onPartial = { partial ->
-      android.util.Log.d("STT_PARTIAL", partial)
-    }, onFinal = { final ->
-      finals.add(final)
-      android.util.Log.d("STT_FINAL", final)
-    })
-
-    withTimeoutOrNull(LISTEN_WINDOW_MS) {
-      while (finals.isEmpty()) delay(500) // Sliding window delay
-    }
-    sttClient.stop()
-
-    val combined = finals.joinToString(" ").trim()
-    if (combined.isEmpty()) {
-      onRepeat()
-      return
-    }
-
-    val numbers = listOf("1", "4", "5", "one", "four", "five")
-    val result = numbers.any { it.equals(combined, ignoreCase = true) }
-
-    if (result) onCorrect() else onUnknown()
-  }
 
 //  private suspend fun collectAndProcess(
 //    expectedProgression: List<String>,
@@ -140,32 +274,265 @@ class VoiceControlService : Service() {
 //    onCorrect: () -> Unit,
 //    onUnknown: () -> Unit
 //  ) {
-//    val finals = mutableListOf<String>()
-//    sttClient.start(onPartial = {}, onFinal = { finals.add(it) })
+//    Log.d(TAG, "Begin audio capture thread=${Thread.currentThread().id}")
 //
-//    withTimeoutOrNull(LISTEN_WINDOW_MS) {
-//      while (finals.isEmpty()) delay(100)
-//    }
-//    sttClient.stop()
+//    val audioData = recordAudioSample()
+//    Log.d(TAG, "Audio captured samples=${audioData.size}")
 //
-//    val combined = finals.joinToString(" ").trim()
-//    if (combined.isEmpty()) {
-//      onRepeat(); return
+//    if (whisperContext == 0L) {
+//      Log.e(TAG, "Invalid whisperContext=0")
+//      onRepeat()
+//      return
 //    }
-//    when (val parsed = commandParser.parse(combined)) {
-//      is CommandParser.Result.Command -> if (parsed.keyword == "repeat") onRepeat() else onUnknown()
-//      is CommandParser.Result.Answer -> {
-//        val ok = evaluator.isCorrect(expectedProgression, parsed.tokens)
-//        if (ok) onCorrect() else onUnknown()
+//
+////    Log.d(TAG, "Calling fullTranscribe ctx=$whisperContext")
+////    val transcription = whisper.fullTranscribe(whisperContext, audioData)
+////    Log.i(TAG, "Transcription result='$transcription'")
+//
+//    val transcription = withContext(whisperDispatcher) {
+//      whisperMutex.withLock {
+//        Log.d(
+//          TAG,
+//          "Calling fullTranscribe ctx=$whisperContext thread=${Thread.currentThread().id} samples=${audioData.size}"
+//        )
+//        whisper.fullTranscribe(whisperContext, audioData)
 //      }
-//      CommandParser.Result.None -> onUnknown()
+//    }
+//
+//    Log.i(TAG, "Transcription result='$transcription'")
+//
+//
+//    if (transcription.isBlank()) {
+//      onRepeat()
+//      return
+//    }
+//
+//    val parsedResult = commandParser.parse(transcription)
+//    when (parsedResult) {
+//      is CommandParser.Result.Answer -> {
+//        val correct = evaluator.isCorrect(expectedProgression, parsedResult.tokens)
+//        if (correct) onCorrect() else onUnknown()
+//      }
+//      else -> onUnknown()
 //    }
 //  }
+
+//  private suspend fun collectAndProcess(
+//    expectedProgression: List<String>,
+//    onRepeat: () -> Unit,
+//    onCorrect: () -> Unit,
+//    onUnknown: () -> Unit
+//  ) {
+//    Log.d(TAG, "Begin audio capture thread=${Thread.currentThread().id}")
+//
+//    val audioData = recordAudioSample()
+//    Log.d(TAG, "Audio captured samples=${audioData.size}")
+//
+//    if (whisperContext == 0L) {
+//      Log.e(TAG, "Invalid whisperContext=0")
+//      onRepeat()
+//      return
+//    }
+//
+//    val transcription = withContext(whisperDispatcher) {
+//      whisperMutex.withLock {
+//        Log.d(
+//          TAG,
+//          "Calling fullTranscribe ctx=$whisperContext thread=${Thread.currentThread().id} samples=${audioData.size}"
+//        )
+//        whisper.fullTranscribe(whisperContext, audioData)
+//      }
+//    }
+//
+//    Log.i(TAG, "Transcription result='$transcription'")
+//
+//    if (transcription.isBlank()) {
+//      onRepeat()
+//      return
+//    }
+//
+//    val parsedResult = commandParser.parse(transcription)
+//    when (parsedResult) {
+//      is CommandParser.Result.Answer -> {
+//        val normalizedTokens = parsedResult.tokens.map { normalizeToken(it) }
+//        val correct = evaluator.isCorrect(expectedProgression, normalizedTokens)
+//        if (correct) {
+//          onCorrect()
+//        } else {
+//          onUnknown()
+//        }
+//      }
+//      else -> onUnknown()
+//    }
+//  }
+
+private enum class ListenResult {
+  CORRECT, INCORRECT, REPEAT
+}
+
+  private suspend fun collectAndProcessOnce(
+    expectedProgression: List<String>
+  ): ListenResult {
+
+    // Ensure whisper is ready before recording/transcribing
+    whisperReady.await()
+
+    val audioData = recordAudioSample()
+
+    if (whisperContext == 0L) {
+      logRepeat("whisperContext=0")
+      return ListenResult.REPEAT
+    }
+
+    val transcription = withContext(whisperDispatcher) {
+      whisperMutex.withLock {
+        whisper.fullTranscribe(whisperContext, audioData)
+      }
+    }
+
+    if (transcription.isBlank()) {
+      logRepeat("blank transcription")
+      return ListenResult.REPEAT
+    }
+
+    Log.i(TAG, "Transcription='$transcription'")
+
+    val parsed = commandParser.parse(transcription)
+    if (parsed !is CommandParser.Result.Answer) {
+      logIncorrect(transcription, emptyList())
+      return ListenResult.INCORRECT
+    }
+
+    val normalized = parsed.tokens.map { normalizeToken(it) }
+
+    return if (evaluator.isCorrect(expectedProgression, normalized)) {
+      Log.i(TAG, "ListenResult=CORRECT normalized=$normalized")
+      ListenResult.CORRECT
+    } else {
+      logIncorrect(transcription, normalized)
+      ListenResult.INCORRECT
+    }
+  }
+
+
+//private suspend fun collectAndProcessOnce(
+//  expectedProgression: List<String>
+//): ListenResult {
+//  whisperReady.await()
+//
+//  val audioData = recordAudioSample()
+//
+//  if (whisperContext == 0L) return ListenResult.REPEAT
+//
+//  val transcription = withContext(whisperDispatcher) {
+//    whisperMutex.withLock {
+//      whisper.fullTranscribe(whisperContext, audioData)
+//    }
+//  }
+//  Log.i(TAG, "Transcription='$transcription'")
+//
+//  if (transcription.isBlank()) return ListenResult.REPEAT
+//
+//  val parsed = commandParser.parse(transcription)
+//  if (parsed !is CommandParser.Result.Answer) {
+//    return ListenResult.INCORRECT
+//  }
+//
+//  val normalized = parsed.tokens.map { normalizeToken(it) }
+//
+//  return if (evaluator.isCorrect(expectedProgression, normalized)) {
+//    ListenResult.CORRECT
+//  } else {
+//    ListenResult.INCORRECT
+//  }
+//}
+
+
+  private fun normalizeToken(token: String): String {
+    val cleaned = token
+      .lowercase()
+      .replace(Regex("[^a-z0-9]"), "") // remove commas, periods, spaces, etc.
+
+    return when (cleaned) {
+      "one" -> "1"
+      "two" -> "2"
+      "three" -> "3"
+      "four" -> "4"
+      "five" -> "5"
+      "six" -> "6"
+      else -> cleaned
+    }
+  }
+
+
+
+
+  private suspend fun recordAudioSample(): FloatArray {
+    val totalSamples = (SAMPLE_RATE * (LISTEN_WINDOW_MS / 1000f)).toInt()
+    val audioBuffer = ShortArray(totalSamples)
+
+    val minBufferSize = AudioRecord.getMinBufferSize(
+      SAMPLE_RATE,
+      CHANNEL_CONFIG,
+      AUDIO_FORMAT
+    )
+
+    Log.d(TAG, "AudioRecord minBufferSize=$minBufferSize totalSamples=$totalSamples")
+
+    val recorder = AudioRecord(
+      MediaRecorder.AudioSource.MIC,
+      SAMPLE_RATE,
+      CHANNEL_CONFIG,
+      AUDIO_FORMAT,
+      maxOf(minBufferSize, totalSamples * 2)
+    )
+
+    try {
+      recorder.startRecording()
+      Log.d(TAG, "Recording started")
+
+      var samplesRead = 0
+      while (samplesRead < totalSamples) {
+        val read = recorder.read(
+          audioBuffer,
+          samplesRead,
+          totalSamples - samplesRead
+        )
+        if (read <= 0) {
+          Log.w(TAG, "AudioRecord read=$read at samplesRead=$samplesRead")
+          break
+        }
+        samplesRead += read
+      }
+
+      Log.d(TAG, "Recording complete samplesRead=$samplesRead")
+    } finally {
+      recorder.stop()
+      recorder.release()
+    }
+
+    val floatBuffer = FloatArray(totalSamples)
+    var sumSq = 0.0
+    for (i in 0 until totalSamples) {
+      val v = audioBuffer[i] / 32768.0f
+      floatBuffer[i] = v
+      sumSq += v * v
+    }
+
+    val rms = sqrt(sumSq / totalSamples)
+    Log.i(TAG, "Audio RMS=$rms")
+
+    return floatBuffer
+  }
 
   private fun ensureChannel() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-      val ch = NotificationChannel(VOICE_CHANNEL_ID, "Maestro Voice", NotificationManager.IMPORTANCE_LOW)
+      val ch = NotificationChannel(
+        VOICE_CHANNEL_ID,
+        "Maestro Voice",
+        NotificationManager.IMPORTANCE_LOW
+      )
       mgr.createNotificationChannel(ch)
     }
   }
@@ -180,18 +547,26 @@ class VoiceControlService : Service() {
 
   private fun acquireWakeLock() {
     val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Maestro:VoiceControl").apply {
-      setReferenceCounted(false); acquire()
+    wakeLock = pm.newWakeLock(
+      PowerManager.PARTIAL_WAKE_LOCK,
+      "Maestro:VoiceControl"
+    ).apply {
+      setReferenceCounted(false)
+      acquire()
     }
   }
-  private fun releaseWakeLock() { wakeLock?.let { if (it.isHeld) it.release() } }
 
-  interface SttClient {
-    fun start(onPartial: (String) -> Unit, onFinal: (String) -> Unit)
-    fun stop()
+  private fun releaseWakeLock() {
+    wakeLock?.let { if (it.isHeld) it.release() }
   }
-  private class SttClientStub : SttClient {
-    override fun start(onPartial: (String) -> Unit, onFinal: (String) -> Unit) { /* hook JNI here */ }
-    override fun stop() { /* hook JNI here */ }
-  }
+}
+private fun logRepeat(reason: String) {
+  Log.d(TAG, "ListenResult=REPEAT ($reason) — retrying")
+}
+
+private fun logIncorrect(transcription: String, normalized: List<String>) {
+  Log.d(
+    TAG,
+    "ListenResult=INCORRECT transcription='$transcription' normalized=$normalized — retrying"
+  )
 }
