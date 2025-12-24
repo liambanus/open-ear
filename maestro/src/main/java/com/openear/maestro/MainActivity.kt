@@ -80,21 +80,6 @@ class MainActivity : ComponentActivity() {
     }
   }
 
-//  override fun onRequestPermissionsResult(
-//    requestCode: Int,
-//    permissions: Array<out String>,
-//    grantResults: IntArray
-//  ) {
-//    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-//
-//    if (requestCode == 1001 &&
-//      grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
-//    ) {
-//      startAndBindVoiceService()
-//    }
-//  }
-
-
   override fun onDestroy() {
     if (bound) unbindService(connection)
     super.onDestroy()

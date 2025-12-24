@@ -50,7 +50,7 @@ android/.idea
 # Ignore Maestro build output only
 maestro/build/
 maestro/.cxx
-maestro/
+#maestro/
 # --- Explicitly ignore node modules (both common spellings) ---
 node_modules/
 node-modules/
