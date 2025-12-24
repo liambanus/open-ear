@@ -12,6 +12,8 @@ import androidx.lifecycle.viewModelScope
 import android.util.Log
 
 import android.media.MediaPlayer
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 
 class MaestroViewModel : ViewModel() {
@@ -21,10 +23,14 @@ class MaestroViewModel : ViewModel() {
 
   private lateinit var assetPlayer: AssetPlayer
   private var voiceControlPort: VoiceControlService.Port? = null
+  private val progressions = listOf(listOf("1","4","5","4"), listOf("1","5","1","4"))
+  private var currentProgressionIndex = 0
+  private var recordingActive = false
 
   // Added state to store the result of transcription (correct/incorrect feedback)
   private val _transcriptionResult = MutableStateFlow("")
   val transcriptionResult: StateFlow<String> = _transcriptionResult.asStateFlow()
+
 
    fun initialize(context: Context) {
     assetPlayer = AssetPlayer(context.applicationContext)
@@ -60,11 +66,14 @@ class MaestroViewModel : ViewModel() {
 
     _uiState.value = _uiState.value.copy(
       userMessage = "Listen to the progression...",
-      isListening = false
+      isListening = false,
+      isFinished = false
     )
 
     viewModelScope.launch {
-      playProgression(listOf("1", "4", "5", "4"))
+      val progression = listOf("1", "4", "5", "4")
+
+      playProgression(progression)
 
       delay(1000)
 
@@ -74,17 +83,55 @@ class MaestroViewModel : ViewModel() {
       )
 
       port.beginListening(
-        expectedProgression = listOf("1", "4", "5", "4"),
+        expectedProgression = progression,
         onCorrect = {
           _uiState.value = _uiState.value.copy(
             isFinished = true,
             isListening = false,
             userMessage = "Correct!"
           )
+        },
+        onIncorrect = {
+          _uiState.value = _uiState.value.copy(
+            isListening = false,
+            userMessage = "Incorrect."
+          )
         }
       )
     }
   }
+
+
+//  fun requestProgressionPlayback() {
+//    val port = voiceControlPort ?: return
+//
+//    _uiState.value = _uiState.value.copy(
+//      userMessage = "Listen to the progression...",
+//      isListening = false
+//    )
+//
+//    viewModelScope.launch {
+//      playProgression(listOf("1", "4", "5", "4"))
+//
+//      delay(1000)
+//
+//      _uiState.value = _uiState.value.copy(
+//        userMessage = "Now say the progression",
+//        isListening = true
+//      )
+//
+//      port.beginListening(
+//        expectedProgression = listOf("1", "4", "5", "4"),
+//        onCorrect = {
+//          _uiState.value = _uiState.value.copy(
+//            isFinished = true,
+//            isListening = false,
+//            userMessage = "Correct!"
+//          )
+//        }
+//      )
+//    }
+//  }
 
   fun checkTextAnswer(answer: String) {
     val isCorrect = answer.trim() == _uiState.value.correctAnswer
@@ -103,27 +150,69 @@ class MaestroViewModel : ViewModel() {
 
   fun toggleVoiceRecording(isRecording: Boolean) {
     if (isRecording) {
-      startVoiceListening()
+      startExerciseLoop()
+    } else {
+      stopVoiceListening()
     }
   }
 
-  private fun startVoiceListening() {
-    android.util.Log.d("VOICE_CONTROL", "Started voice listening.")
-    voiceControlPort?.beginListening(
-      expectedProgression = listOf("1", "4", "5", "4"),
-      onCorrect = {
-        updateTranscriptionResult("Correct!")
-        _uiState.value = _uiState.value.copy(
-          isFinished = true,
-          userMessage = "Correct!"
-        )
-      }
+  private fun startExerciseLoop() {
+    recordingActive = true
+    _uiState.value = _uiState.value.copy(
+      showMainMenu = false,
+      userMessage = "Listen to the progression and say it out loud.",
+      isListening = true,
+      isFinished = false
     )
+    viewModelScope.launch {
+      val port = voiceControlPort ?: return@launch
+      while (recordingActive) {
+        val progression = progressions[currentProgressionIndex]
+        playProgression(progression)            // play chord progression
+        // Listen for one attempt (5 seconds recording)
+        val correct = suspendCancellableCoroutine<Boolean> { cont ->
+          port.beginListening(
+            expectedProgression = progression,
+            onCorrect = {
+              if (cont.isActive) cont.resume(true)
+            },
+            onIncorrect = {
+              if (cont.isActive) cont.resume(false)
+            }
+          )
+
+          cont.invokeOnCancellation {
+            port.stopListening()
+          }
+        }
+        if (!recordingActive) break
+        if (correct) {
+          // Answer is correct
+          _uiState.value = _uiState.value.copy(
+            userMessage = "Correct!",
+            isListening = false,
+            isFinished = true
+          )
+          // Switch progression for next time
+          currentProgressionIndex = 1 - currentProgressionIndex
+          _uiState.value = _uiState.value.copy(
+            correctAnswer = progressions[currentProgressionIndex].joinToString("")
+          )
+          break
+        } else {
+          // Incorrect, will play progression again
+          _uiState.value = _uiState.value.copy(userMessage = "Incorrect, try again.")
+        }
+      }
+    }
+  }
+  
+  private fun stopVoiceListening() {
+    recordingActive = false
+    voiceControlPort?.stopListening()
+    _uiState.value = _uiState.value.copy(isListening = false, userMessage = "")
   }
 
-  private fun stopVoiceListening() {
-    android.util.Log.d("VOICE_CONTROL", "Stopped voice listening.")
-  }
 
   // Helper method to update transcription results
   private fun updateTranscriptionResult(message: String) {
