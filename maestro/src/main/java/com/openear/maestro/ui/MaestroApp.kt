@@ -8,27 +8,34 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import kotlinx.coroutines.delay
 import androidx.compose.material3.MaterialTheme
-
+import com.openear.maestro.ui.MaestroUiState
 
 @Composable
 fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
-  val transcriptionResult by viewModel.transcriptionResult.collectAsState()
-  var isRecording by remember { mutableStateOf(false) }
   val context = LocalContext.current
+  val uiState by viewModel.uiState.collectAsState()
+  val transcriptionResult by viewModel.transcriptionResult.collectAsState()
 
-  // 🔥 AUTO-TRIGGER PLAYBACK ON APP START
   LaunchedEffect(Unit) {
     viewModel.initialize(context)
-    delay(1_000)
-    viewModel.requestProgressionPlayback()
   }
 
   Column {
-    Button(onClick = {
-      isRecording = !isRecording
-      viewModel.toggleVoiceRecording(isRecording)
-    }) {
-      Text(if (isRecording) "Stop Recording" else "Start Recording")
+    Button(
+      onClick = {
+        if (uiState.exerciseState == ExerciseState.IDLE) {
+          viewModel.startExercise()
+        } else {
+          viewModel.stopExercise()
+        }
+      }
+    ) {
+      Text(
+        if (uiState.exerciseState == ExerciseState.IDLE)
+          "Start Recording"
+        else
+          "Stop Recording"
+      )
     }
 
     Text(
@@ -36,11 +43,12 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
       style = MaterialTheme.typography.bodyLarge
     )
 
+    // 👇 CALL MaestroScreen here
     MaestroScreen(
-      uiState = viewModel.uiState.collectAsState().value,
-      onStartExercise = viewModel::startChordProgressionExercise,
+      uiState = uiState,
+      onStart = viewModel::startExercise,
+      onStop = viewModel::stopExercise,
       onSubmitAnswer = viewModel::checkTextAnswer,
-      onRepeat = viewModel::requestProgressionPlayback,
       onReset = viewModel::reset
     )
   }
