@@ -55,8 +55,11 @@ class VoiceControlService : Service() {
   interface Port {
     fun beginListening(
       expectedProgression: List<String>,
-      onCorrect: () -> Unit
+      onCorrect: () -> Unit,
+      onIncorrect: () -> Unit
     )
+
+    fun stopListening()
   }
 
 
@@ -88,29 +91,31 @@ class VoiceControlService : Service() {
 
     override fun beginListening(
       expectedProgression: List<String>,
-      onCorrect: () -> Unit
+      onCorrect: () -> Unit,
+      onIncorrect: () -> Unit
     ) {
       listenJob?.cancel()
+
       listenJob = scope.launch {
         delay(LISTEN_DELAY_MS)
 
-        while (isActive) {
-          val result = collectAndProcessOnce(expectedProgression)
-          when (result) {
-            ListenResult.CORRECT -> {
-              onCorrect()
-              return@launch
-            }
-            ListenResult.REPEAT,
-            ListenResult.INCORRECT -> {
-              delay(300) // retry
-            }
-          }
+        val result = collectAndProcessOnce(expectedProgression)
+
+        when (result) {
+          ListenResult.CORRECT -> onCorrect()
+          ListenResult.INCORRECT,
+          ListenResult.REPEAT -> onIncorrect()
         }
       }
     }
+
+    override fun stopListening() {
+      listenJob?.cancel()
+      listenJob = null
+    }
   }
-    override fun onCreate() {
+
+  override fun onCreate() {
     super.onCreate()
 
     commandParser = CommandParser(this)
@@ -176,9 +181,9 @@ class VoiceControlService : Service() {
 
   override fun onBind(intent: Intent?): IBinder = binder
 
-private enum class ListenResult {
-  CORRECT, INCORRECT, REPEAT
-}
+  private enum class ListenResult {
+    CORRECT, INCORRECT, REPEAT
+  }
 
   private suspend fun collectAndProcessOnce(
     expectedProgression: List<String>
@@ -223,7 +228,8 @@ private enum class ListenResult {
       ListenResult.INCORRECT
     }
   }
-    private fun normalizeToken(token: String): String {
+
+  private fun normalizeToken(token: String): String {
     val cleaned = token
       .lowercase()
       .replace(Regex("[^a-z0-9]"), "") // remove commas, periods, spaces, etc.
@@ -238,8 +244,6 @@ private enum class ListenResult {
       else -> cleaned
     }
   }
-
-
 
 
   private suspend fun recordAudioSample(): FloatArray {
@@ -334,14 +338,15 @@ private enum class ListenResult {
   private fun releaseWakeLock() {
     wakeLock?.let { if (it.isHeld) it.release() }
   }
-}
-private fun logRepeat(reason: String) {
-  Log.d(TAG, "ListenResult=REPEAT ($reason) — retrying")
-}
 
-private fun logIncorrect(transcription: String, normalized: List<String>) {
-  Log.d(
-    TAG,
-    "ListenResult=INCORRECT transcription='$transcription' normalized=$normalized — retrying"
-  )
+  private fun logRepeat(reason: String) {
+    Log.d(TAG, "ListenResult=REPEAT ($reason) — retrying")
+  }
+
+  private fun logIncorrect(transcription: String, normalized: List<String>) {
+    Log.d(
+      TAG,
+      "ListenResult=INCORRECT transcription='$transcription' normalized=$normalized — retrying"
+    )
+  }
 }
