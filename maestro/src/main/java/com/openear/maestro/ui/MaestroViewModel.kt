@@ -49,25 +49,25 @@ class MaestroViewModel : ViewModel() {
 
   fun startChordProgressionExercise() {
     _uiState.value = _uiState.value.copy(
-      showMainMenu = false,
+      exerciseState = ExerciseState.PLAYING,
       userMessage = "Listen to the progression and enter your answer."
     )
+
 
     // Trigger playback if needed
     requestProgressionPlayback()
   }
 
   fun reset() {
-    _uiState.value = MaestroUiState()
+    _uiState.value = MaestroUiState(exerciseState = ExerciseState.IDLE)
   }
 
   fun requestProgressionPlayback() {
     val port = voiceControlPort ?: return
 
     _uiState.value = _uiState.value.copy(
-      userMessage = "Listen to the progression...",
-      isListening = false,
-      isFinished = false
+      exerciseState = ExerciseState.PLAYING,
+      userMessage = "Listen to the progression..."
     )
 
     viewModelScope.launch {
@@ -78,22 +78,22 @@ class MaestroViewModel : ViewModel() {
       delay(1000)
 
       _uiState.value = _uiState.value.copy(
-        userMessage = "Now say the progression",
-        isListening = true
+        exerciseState = ExerciseState.LISTENING,
+        userMessage = "Now say the progression"
       )
 
       port.beginListening(
         expectedProgression = progression,
         onCorrect = {
           _uiState.value = _uiState.value.copy(
-            isFinished = true,
-            isListening = false,
+            exerciseState = ExerciseState.FEEDBACK,
             userMessage = "Correct!"
           )
+
         },
         onIncorrect = {
           _uiState.value = _uiState.value.copy(
-            isListening = false,
+            exerciseState = ExerciseState.FEEDBACK,
             userMessage = "Incorrect."
           )
         }
@@ -138,7 +138,7 @@ class MaestroViewModel : ViewModel() {
 
     _uiState.value = if (isCorrect) {
       _uiState.value.copy(
-        isFinished = true,
+        exerciseState = ExerciseState.FEEDBACK,
         userMessage = "Correct!"
       )
     } else {
@@ -148,22 +148,29 @@ class MaestroViewModel : ViewModel() {
     }
   }
 
-  fun toggleVoiceRecording(isRecording: Boolean) {
-    if (isRecording) {
-      startExerciseLoop()
-    } else {
-      stopVoiceListening()
-    }
+//  fun toggleVoiceRecording(isRecording: Boolean) {
+//    if (isRecording) {
+//      startExerciseLoop()
+//    } else {
+//      stopVoiceListening()
+//    }
+//  }
+
+  fun startExercise() {
+    startExerciseLoop()
+  }
+
+  fun stopExercise() {
+    stopVoiceListening()
   }
 
   private fun startExerciseLoop() {
     recordingActive = true
     _uiState.value = _uiState.value.copy(
-      showMainMenu = false,
-      userMessage = "Listen to the progression and say it out loud.",
-      isListening = true,
-      isFinished = false
+      exerciseState = ExerciseState.LISTENING,
+      userMessage = "Listen to the progression and say it out loud."
     )
+
     viewModelScope.launch {
       val port = voiceControlPort ?: return@launch
       while (recordingActive) {
@@ -189,10 +196,10 @@ class MaestroViewModel : ViewModel() {
         if (correct) {
           // Answer is correct
           _uiState.value = _uiState.value.copy(
-            userMessage = "Correct!",
-            isListening = false,
-            isFinished = true
+            exerciseState = ExerciseState.FEEDBACK,
+            userMessage = "Correct!"
           )
+
           // Switch progression for next time
           currentProgressionIndex = 1 - currentProgressionIndex
           _uiState.value = _uiState.value.copy(
@@ -201,16 +208,24 @@ class MaestroViewModel : ViewModel() {
           break
         } else {
           // Incorrect, will play progression again
-          _uiState.value = _uiState.value.copy(userMessage = "Incorrect, try again.")
+          _uiState.value = _uiState.value.copy(
+            exerciseState = ExerciseState.PLAYING,
+            userMessage = "Incorrect, try again."
+          )
+
         }
       }
     }
   }
-  
+
   private fun stopVoiceListening() {
     recordingActive = false
     voiceControlPort?.stopListening()
-    _uiState.value = _uiState.value.copy(isListening = false, userMessage = "")
+    _uiState.value = _uiState.value.copy(
+      exerciseState = ExerciseState.IDLE,
+      userMessage = ""
+    )
+
   }
 
 
