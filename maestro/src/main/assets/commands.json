@@ -1,0 +1,28 @@
+{
+  "commands": [
+    { "keyword": "repeat", "type": "ACTION", "aliases": ["again", "play", "play again"] }
+  ],
+  "answers": {
+    "numbers": {
+      "1": ["one", "won"],
+      "2": ["two", "to", "too"],
+      "3": ["three"],
+      "4": ["four", "for"],
+      "5": ["five"],
+      "6": ["six"],
+      "7": ["seven"]
+    },
+    "qualities": {
+      "major": [],
+      "minor": [],
+      "perfect": [],
+      "augmented": ["aug"],
+      "suspended": ["sus"]
+    },
+    "modifiers": {
+      "sharp": ["#"],
+      "flat": ["b"]
+    }
+  },
+  "responses": { "notFound": "Sorry, I didn't understand that. Please try again." }
+}

@@ -26,10 +26,7 @@ class MaestroViewModel : ViewModel() {
   private val _transcriptionResult = MutableStateFlow("")
   val transcriptionResult: StateFlow<String> = _transcriptionResult.asStateFlow()
 
-  /* -----------------------------
-   * Initialization
-   * ----------------------------- */
-  fun initialize(context: Context) {
+   fun initialize(context: Context) {
     assetPlayer = AssetPlayer(context.applicationContext)
   }
 
@@ -43,10 +40,6 @@ class MaestroViewModel : ViewModel() {
   fun setVoiceControlPort(port: VoiceControlService.Port) {
     voiceControlPort = port
   }
-
-  /* -----------------------------
-   * Navigation / Flow
-   * ----------------------------- */
 
   fun startChordProgressionExercise() {
     _uiState.value = _uiState.value.copy(
@@ -62,10 +55,6 @@ class MaestroViewModel : ViewModel() {
     _uiState.value = MaestroUiState()
   }
 
-  /* -----------------------------
-   * Exercise Logic
-   * ----------------------------- */
-
   fun requestProgressionPlayback() {
     val port = voiceControlPort ?: return
 
@@ -75,13 +64,10 @@ class MaestroViewModel : ViewModel() {
     )
 
     viewModelScope.launch {
-      // 1️⃣ Play the progression audio
       playProgression(listOf("1", "4", "5", "4"))
 
-      // 2️⃣ Wait 1 second AFTER playback finishes
       delay(1000)
 
-      // 3️⃣ Begin recording
       _uiState.value = _uiState.value.copy(
         userMessage = "Now say the progression",
         isListening = true
@@ -100,37 +86,6 @@ class MaestroViewModel : ViewModel() {
     }
   }
 
-
-//  fun requestProgressionPlayback() {
-//    android.util.Log.d("VOICE", "requestProgressionPlayback called, port=$voiceControlPort")
-//    val port = voiceControlPort ?: return
-//
-//    // TEMP STUB: start voice listening immediately
-//    port.beginListening(
-//      expectedProgression = listOf("1", "4", "5", "4"),
-//      onCorrect = {
-//        android.util.Log.d("VOICE", "correct")
-//        _uiState.value = _uiState.value.copy(
-//          isFinished = true,
-//          userMessage = "Correct!"
-//        )
-//      }
-//    )
-
-//    port.beginListening(
-////      expectedProgression = listOf("I", "V", "vi", "IV"),
-//      expectedProgression = listOf("1", "4", "5", "4"),
-//      onRepeat = {
-//        android.util.Log.d("VOICE", "repeat")
-//      },
-//      onCorrect = {
-//        android.util.Log.d("VOICE", "correct")
-//      },
-//      onUnknown = {
-//        android.util.Log.d("VOICE", "unknown")
-//      }
-//    )
-
   fun checkTextAnswer(answer: String) {
     val isCorrect = answer.trim() == _uiState.value.correctAnswer
 
@@ -146,20 +101,11 @@ class MaestroViewModel : ViewModel() {
     }
   }
 
-//  fun toggleVoiceRecording(isRecording: Boolean) {
-//    if (isRecording) {
-//      startVoiceListening()
-//    } else {
-//      stopVoiceListening()
-//    }
-//  }
-
   fun toggleVoiceRecording(isRecording: Boolean) {
     if (isRecording) {
       startVoiceListening()
     }
   }
-
 
   private fun startVoiceListening() {
     android.util.Log.d("VOICE_CONTROL", "Started voice listening.")
@@ -174,16 +120,6 @@ class MaestroViewModel : ViewModel() {
       }
     )
   }
-
-//  private fun startVoiceListening() {
-//    android.util.Log.d("VOICE_CONTROL", "Started voice listening.")
-//    voiceControlPort?.beginListening(
-//      expectedProgression = listOf("1", "4", "5", "4"), // Correct answer sequence
-//      onRepeat = { updateTranscriptionResult("No audio detected. Please repeat.") },
-//      onCorrect = { updateTranscriptionResult("Correct!") },
-//      onUnknown = { updateTranscriptionResult("Incorrect. Try again.") }
-//    )
-//  }
 
   private fun stopVoiceListening() {
     android.util.Log.d("VOICE_CONTROL", "Stopped voice listening.")

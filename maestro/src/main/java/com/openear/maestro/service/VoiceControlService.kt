@@ -110,49 +110,7 @@ class VoiceControlService : Service() {
       }
     }
   }
-
-
-//  private val portImpl = object : Port {
-//    override fun beginListening(
-//      expectedProgression: List<String>,
-//      onCorrect: () -> Unit
-//    ) {
-//      listenJob?.cancel()
-//      listenJob = scope.launch {
-//        delay(LISTEN_DELAY_MS)
-//
-//        while (isActive) {
-//          val result = collectAndProcessOnce(expectedProgression)
-//          when (result) {
-//            ListenResult.CORRECT -> {
-//              onCorrect()
-//              return@launch
-//            }
-//            ListenResult.REPEAT,
-//            ListenResult.INCORRECT -> {
-//              // loop retries automatically
-//              delay(300)
-//            }
-//          }
-//        }
-//      }
-//    }
-
-//    override fun beginListening(
-//      expectedProgression: List<String>,
-//      onRepeat: () -> Unit,
-//      onCorrect: () -> Unit,
-//      onUnknown: () -> Unit
-//    ) {
-//      listenJob?.cancel()
-//      listenJob = scope.launch {
-//        delay(LISTEN_DELAY_MS)
-//        collectAndProcess(expectedProgression, onRepeat, onCorrect, onUnknown)
-//      }
-//    }
-//  }
-
-  override fun onCreate() {
+    override fun onCreate() {
     super.onCreate()
 
     commandParser = CommandParser(this)
@@ -160,25 +118,6 @@ class VoiceControlService : Service() {
     val modelFile = File(MODEL_PATH)
     Log.i(TAG, "Model path=$MODEL_PATH exists=${modelFile.exists()} size=${modelFile.length()}")
 
-//    try {
-//      whisper = Whisper()
-//      whisperContext = whisper.initContext(MODEL_PATH)
-//      Log.i(TAG, "Whisper context initialized: ctx=$whisperContext thread=${Thread.currentThread().id}")
-//    } catch (t: Throwable) {
-//      Log.e(TAG, "Failed to initialize Whisper context", t)
-//    }
-//    scope.launch(whisperDispatcher) {
-//      try {
-//        whisper = Whisper()
-//        whisperContext = whisper.initContext(MODEL_PATH)
-//        Log.i(
-//          TAG,
-//          "Whisper context initialized: ctx=$whisperContext thread=${Thread.currentThread().id}"
-//        )
-//      } catch (t: Throwable) {
-//        Log.e(TAG, "Failed to initialize Whisper context", t)
-//      }
-//    }
     scope.launch(whisperDispatcher) {
       try {
         whisper = Whisper()
@@ -228,143 +167,14 @@ class VoiceControlService : Service() {
   override fun onDestroy() {
     listenJob?.cancel()
     scope.cancel()
-
-//    if (whisperContext != 0L) {
-//      try {
-//        whisper.freeContext(whisperContext)
-//        Log.i(TAG, "Whisper context freed: ctx=$whisperContext")
-//      } catch (t: Throwable) {
-//        Log.e(TAG, "Failed to free Whisper context", t)
-//      }
-//    }
-
     scope.launch(whisperDispatcher) {
       whisperReady.await()
-
-//      try {
-//        whisperReady.await()
-//      } catch (t: Throwable) {
-//        Log.e(TAG, "Whisper not ready", t)
-//        onRepeat()
-//        return
-//      }
-
-//      if (whisperContext != 0L) {
-//        try {
-//          whisper.freeContext(whisperContext)
-//          Log.i(
-//            TAG,
-//            "Whisper context freed: ctx=$whisperContext thread=${Thread.currentThread().id}"
-//          )
-//        } catch (t: Throwable) {
-//          Log.e(TAG, "Failed to free Whisper context", t)
-//        }
-//      }
     }
-
     releaseWakeLock()
     super.onDestroy()
   }
 
   override fun onBind(intent: Intent?): IBinder = binder
-
-//  private suspend fun collectAndProcess(
-//    expectedProgression: List<String>,
-//    onRepeat: () -> Unit,
-//    onCorrect: () -> Unit,
-//    onUnknown: () -> Unit
-//  ) {
-//    Log.d(TAG, "Begin audio capture thread=${Thread.currentThread().id}")
-//
-//    val audioData = recordAudioSample()
-//    Log.d(TAG, "Audio captured samples=${audioData.size}")
-//
-//    if (whisperContext == 0L) {
-//      Log.e(TAG, "Invalid whisperContext=0")
-//      onRepeat()
-//      return
-//    }
-//
-////    Log.d(TAG, "Calling fullTranscribe ctx=$whisperContext")
-////    val transcription = whisper.fullTranscribe(whisperContext, audioData)
-////    Log.i(TAG, "Transcription result='$transcription'")
-//
-//    val transcription = withContext(whisperDispatcher) {
-//      whisperMutex.withLock {
-//        Log.d(
-//          TAG,
-//          "Calling fullTranscribe ctx=$whisperContext thread=${Thread.currentThread().id} samples=${audioData.size}"
-//        )
-//        whisper.fullTranscribe(whisperContext, audioData)
-//      }
-//    }
-//
-//    Log.i(TAG, "Transcription result='$transcription'")
-//
-//
-//    if (transcription.isBlank()) {
-//      onRepeat()
-//      return
-//    }
-//
-//    val parsedResult = commandParser.parse(transcription)
-//    when (parsedResult) {
-//      is CommandParser.Result.Answer -> {
-//        val correct = evaluator.isCorrect(expectedProgression, parsedResult.tokens)
-//        if (correct) onCorrect() else onUnknown()
-//      }
-//      else -> onUnknown()
-//    }
-//  }
-
-//  private suspend fun collectAndProcess(
-//    expectedProgression: List<String>,
-//    onRepeat: () -> Unit,
-//    onCorrect: () -> Unit,
-//    onUnknown: () -> Unit
-//  ) {
-//    Log.d(TAG, "Begin audio capture thread=${Thread.currentThread().id}")
-//
-//    val audioData = recordAudioSample()
-//    Log.d(TAG, "Audio captured samples=${audioData.size}")
-//
-//    if (whisperContext == 0L) {
-//      Log.e(TAG, "Invalid whisperContext=0")
-//      onRepeat()
-//      return
-//    }
-//
-//    val transcription = withContext(whisperDispatcher) {
-//      whisperMutex.withLock {
-//        Log.d(
-//          TAG,
-//          "Calling fullTranscribe ctx=$whisperContext thread=${Thread.currentThread().id} samples=${audioData.size}"
-//        )
-//        whisper.fullTranscribe(whisperContext, audioData)
-//      }
-//    }
-//
-//    Log.i(TAG, "Transcription result='$transcription'")
-//
-//    if (transcription.isBlank()) {
-//      onRepeat()
-//      return
-//    }
-//
-//    val parsedResult = commandParser.parse(transcription)
-//    when (parsedResult) {
-//      is CommandParser.Result.Answer -> {
-//        val normalizedTokens = parsedResult.tokens.map { normalizeToken(it) }
-//        val correct = evaluator.isCorrect(expectedProgression, normalizedTokens)
-//        if (correct) {
-//          onCorrect()
-//        } else {
-//          onUnknown()
-//        }
-//      }
-//      else -> onUnknown()
-//    }
-//  }
 
 private enum class ListenResult {
   CORRECT, INCORRECT, REPEAT
@@ -413,42 +223,7 @@ private enum class ListenResult {
       ListenResult.INCORRECT
     }
   }
-
-
-//private suspend fun collectAndProcessOnce(
-//  expectedProgression: List<String>
-//): ListenResult {
-//  whisperReady.await()
-//
-//  val audioData = recordAudioSample()
-//
-//  if (whisperContext == 0L) return ListenResult.REPEAT
-//
-//  val transcription = withContext(whisperDispatcher) {
-//    whisperMutex.withLock {
-//      whisper.fullTranscribe(whisperContext, audioData)
-//    }
-//  }
-//  Log.i(TAG, "Transcription='$transcription'")
-//
-//  if (transcription.isBlank()) return ListenResult.REPEAT
-//
-//  val parsed = commandParser.parse(transcription)
-//  if (parsed !is CommandParser.Result.Answer) {
-//    return ListenResult.INCORRECT
-//  }
-//
-//  val normalized = parsed.tokens.map { normalizeToken(it) }
-//
-//  return if (evaluator.isCorrect(expectedProgression, normalized)) {
-//    ListenResult.CORRECT
-//  } else {
-//    ListenResult.INCORRECT
-//  }
-//}
-
-
-  private fun normalizeToken(token: String): String {
+    private fun normalizeToken(token: String): String {
     val cleaned = token
       .lowercase()
       .replace(Regex("[^a-z0-9]"), "") // remove commas, periods, spaces, etc.
