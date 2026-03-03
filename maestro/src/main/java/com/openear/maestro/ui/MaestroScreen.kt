@@ -43,6 +43,14 @@ fun MaestroScreen(
         }
       }
 
+      ExerciseState.LOOPING -> {
+        Text(uiState.userMessage)
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onStop) {
+          Text("Stop Loop")
+        }
+      }
+
       ExerciseState.EVALUATING -> {
         Text("Evaluating…")
       }

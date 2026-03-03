@@ -43,22 +43,14 @@ private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
 
 class VoiceControlService : Service() {
 
-//  interface Port {
-//    fun beginListening(
-//      expectedProgression: List<String>,
-//      onRepeat: () -> Unit,
-//      onCorrect: () -> Unit,
-//      onUnknown: () -> Unit
-//    )
-//  }
+
 
   interface Port {
     fun beginListening(
       expectedProgression: List<String>,
       onCorrect: () -> Unit,
-      onIncorrect: () -> Unit
+      onIncorrect: (List<String>) -> Unit
     )
-
     fun stopListening()
   }
 
@@ -92,19 +84,18 @@ class VoiceControlService : Service() {
     override fun beginListening(
       expectedProgression: List<String>,
       onCorrect: () -> Unit,
-      onIncorrect: () -> Unit
-    ) {
+      onIncorrect: (List<String>) -> Unit
+    )
+    {
       listenJob?.cancel()
 
       listenJob = scope.launch {
         delay(LISTEN_DELAY_MS)
-
         val result = collectAndProcessOnce(expectedProgression)
-
         when (result) {
-          ListenResult.CORRECT -> onCorrect()
-          ListenResult.INCORRECT,
-          ListenResult.REPEAT -> onIncorrect()
+          ListenResult.Correct -> onCorrect()
+          is ListenResult.Incorrect -> onIncorrect(result.transcribed)
+          ListenResult.Repeat -> onIncorrect(emptyList())
         }
       }
     }
@@ -181,10 +172,15 @@ class VoiceControlService : Service() {
 
   override fun onBind(intent: Intent?): IBinder = binder
 
-  private enum class ListenResult {
-    CORRECT, INCORRECT, REPEAT
-  }
+//  private enum class ListenResult {
+//    CORRECT, INCORRECT, REPEAT
+//  }
 
+  private sealed class ListenResult {
+    object Correct : ListenResult()
+    object Repeat : ListenResult()
+    data class Incorrect(val transcribed: List<String>) : ListenResult()
+  }
   private suspend fun collectAndProcessOnce(
     expectedProgression: List<String>
   ): ListenResult {
@@ -196,7 +192,7 @@ class VoiceControlService : Service() {
 
     if (whisperContext == 0L) {
       logRepeat("whisperContext=0")
-      return ListenResult.REPEAT
+      return ListenResult.Repeat
     }
 
     val transcription = withContext(whisperDispatcher) {
@@ -207,7 +203,7 @@ class VoiceControlService : Service() {
 
     if (transcription.isBlank()) {
       logRepeat("blank transcription")
-      return ListenResult.REPEAT
+      return ListenResult.Repeat
     }
 
     Log.i(TAG, "Transcription='$transcription'")
@@ -215,17 +211,17 @@ class VoiceControlService : Service() {
     val parsed = commandParser.parse(transcription)
     if (parsed !is CommandParser.Result.Answer) {
       logIncorrect(transcription, emptyList())
-      return ListenResult.INCORRECT
+      return ListenResult.Incorrect(emptyList())
     }
 
     val normalized = parsed.tokens.map { normalizeToken(it) }
 
     return if (evaluator.isCorrect(expectedProgression, normalized)) {
       Log.i(TAG, "ListenResult=CORRECT normalized=$normalized")
-      ListenResult.CORRECT
+      ListenResult.Correct
     } else {
       logIncorrect(transcription, normalized)
-      ListenResult.INCORRECT
+      ListenResult.Incorrect(normalized)
     }
   }
 
@@ -350,3 +346,12 @@ class VoiceControlService : Service() {
     )
   }
 }
+
+//  interface Port {
+//    fun beginListening(
+//      expectedProgression: List<String>,
+//      onRepeat: () -> Unit,
+//      onCorrect: () -> Unit,
+//      onUnknown: () -> Unit
+//    )
+//  }

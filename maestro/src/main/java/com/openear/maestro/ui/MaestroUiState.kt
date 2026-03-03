@@ -3,7 +3,8 @@ package com.openear.maestro.ui
 data class MaestroUiState(
   val exerciseState: ExerciseState = ExerciseState.IDLE,
   val userMessage: String = "",
-  val correctAnswer: String = ""
+  val correctAnswer: String = "",
+  val heardTranscription: String = ""
 ) {
   val showMainMenu: Boolean
     get() = exerciseState == ExerciseState.IDLE
@@ -20,6 +21,7 @@ enum class ExerciseState {
   PLAYING,
   LISTENING,
   EVALUATING,
-  FEEDBACK
+  FEEDBACK,
+  LOOPING
 }
 

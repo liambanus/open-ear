@@ -23,14 +23,58 @@ class MaestroViewModel : ViewModel() {
 
   private lateinit var assetPlayer: AssetPlayer
   private var voiceControlPort: VoiceControlService.Port? = null
-  private val progressions = listOf(listOf("1","4","5","4"), listOf("1","5","1","4"))
+  private val progressions = listOf(listOf("1","4","5","4"), listOf("1","5","1","4"), listOf("5","4","1","4"), listOf("5","4","5","1"))
   private var currentProgressionIndex = 0
+  private val random = java.util.Random()
   private var recordingActive = false
+
+  private var exerciseJob: kotlinx.coroutines.Job? = null
 
   // Added state to store the result of transcription (correct/incorrect feedback)
   private val _transcriptionResult = MutableStateFlow("")
   val transcriptionResult: StateFlow<String> = _transcriptionResult.asStateFlow()
 
+  private var playbackLoopActive = false
+  private var playbackLoopJob: kotlinx.coroutines.Job? = null
+
+  private fun evaluateFeedback(expected: List<String>, heard: List<String>): String {
+    if (heard.isEmpty()) return "Didn't catch that, try again."
+    val matches = expected.zip(heard).count { (e, h) -> e == h }
+    return when {
+      matches == expected.size -> "Correct!"
+      matches == expected.size - 1 -> {
+        val wrongPos = expected.zip(heard).indexOfFirst { (e, h) -> e != h }
+        val ordinal = listOf("First", "Second", "Third", "Fourth").getOrElse(wrongPos) { "${wrongPos+1}th" }
+        "Almost! $ordinal chord wrong."
+      }
+      else -> "Incorrect. You said: ${heard.joinToString("-").ifEmpty { "nothing" }}"
+    }
+  }
+  fun startPlaybackLoop(progressionIndex: Int) {
+    playbackLoopActive = true
+    playbackLoopJob = viewModelScope.launch {
+      val progression = progressions[progressionIndex]
+      _uiState.value = _uiState.value.copy(
+//        exerciseState = ExerciseState.PLAYING,
+        exerciseState = ExerciseState.LOOPING,
+        userMessage = "Looping: ${progression.joinToString("-")}"
+      )
+      while (playbackLoopActive) {
+        playProgression(progression)
+        delay(500)
+      }
+    }
+  }
+
+  fun stopPlaybackLoop() {
+    playbackLoopActive = false
+    playbackLoopJob?.cancel()
+    playbackLoopJob = null
+    _uiState.value = _uiState.value.copy(
+      exerciseState = ExerciseState.IDLE,
+      userMessage = ""
+    )
+  }
 
    fun initialize(context: Context) {
     assetPlayer = AssetPlayer(context.applicationContext)
@@ -101,38 +145,6 @@ class MaestroViewModel : ViewModel() {
     }
   }
 
-
-//  fun requestProgressionPlayback() {
-//    val port = voiceControlPort ?: return
-//
-//    _uiState.value = _uiState.value.copy(
-//      userMessage = "Listen to the progression...",
-//      isListening = false
-//    )
-//
-//    viewModelScope.launch {
-//      playProgression(listOf("1", "4", "5", "4"))
-//
-//      delay(1000)
-//
-//      _uiState.value = _uiState.value.copy(
-//        userMessage = "Now say the progression",
-//        isListening = true
-//      )
-//
-//      port.beginListening(
-//        expectedProgression = listOf("1", "4", "5", "4"),
-//        onCorrect = {
-//          _uiState.value = _uiState.value.copy(
-//            isFinished = true,
-//            isListening = false,
-//            userMessage = "Correct!"
-//          )
-//        }
-//      )
-//    }
-//  }
-
   fun checkTextAnswer(answer: String) {
     val isCorrect = answer.trim() == _uiState.value.correctAnswer
 
@@ -148,13 +160,7 @@ class MaestroViewModel : ViewModel() {
     }
   }
 
-//  fun toggleVoiceRecording(isRecording: Boolean) {
-//    if (isRecording) {
-//      startExerciseLoop()
-//    } else {
-//      stopVoiceListening()
-//    }
-//  }
+
 
   fun startExercise() {
     startExerciseLoop()
@@ -171,46 +177,47 @@ class MaestroViewModel : ViewModel() {
       userMessage = "Listen to the progression and say it out loud."
     )
 
-    viewModelScope.launch {
+    exerciseJob = viewModelScope.launch {
       val port = voiceControlPort ?: return@launch
       while (recordingActive) {
         val progression = progressions[currentProgressionIndex]
         playProgression(progression)            // play chord progression
         // Listen for one attempt (5 seconds recording)
-        val correct = suspendCancellableCoroutine<Boolean> { cont ->
+        val (correct, heard) = suspendCancellableCoroutine<Pair<Boolean, List<String>>> { cont ->
           port.beginListening(
             expectedProgression = progression,
             onCorrect = {
-              if (cont.isActive) cont.resume(true)
+              if (cont.isActive) cont.resume(true to emptyList())
             },
-            onIncorrect = {
-              if (cont.isActive) cont.resume(false)
+            onIncorrect = { heard ->
+              if (cont.isActive) cont.resume(false to heard)
             }
           )
-
           cont.invokeOnCancellation {
             port.stopListening()
           }
         }
-        if (!recordingActive) break
+        if (!recordingActive) return@launch
         if (correct) {
-          // Answer is correct
           _uiState.value = _uiState.value.copy(
             exerciseState = ExerciseState.FEEDBACK,
             userMessage = "Correct!"
           )
-
-          // Switch progression for next time
-          currentProgressionIndex = 1 - currentProgressionIndex
+          delay(1000)
+          currentProgressionIndex = random.nextInt(progressions.size)
           _uiState.value = _uiState.value.copy(
-            correctAnswer = progressions[currentProgressionIndex].joinToString("")
+            exerciseState = ExerciseState.PLAYING,
+            correctAnswer = progressions[currentProgressionIndex].joinToString(""),
+            userMessage = "Listen to the progression and say it out loud."
           )
-          break
-        } else {
+          // loop continues — remove the break
+        }
+        else {
           // Incorrect, will play progression again
           _uiState.value = _uiState.value.copy(
             exerciseState = ExerciseState.PLAYING,
-            userMessage = "Incorrect, try again."
+            userMessage = evaluateFeedback(progression, heard),
+            heardTranscription = if (heard.isEmpty()) "" else "I heard: ${heard.joinToString("-")}"
           )
 
         }
@@ -220,12 +227,13 @@ class MaestroViewModel : ViewModel() {
 
   private fun stopVoiceListening() {
     recordingActive = false
+    exerciseJob?.cancel()
+    exerciseJob = null
     voiceControlPort?.stopListening()
     _uiState.value = _uiState.value.copy(
       exerciseState = ExerciseState.IDLE,
       userMessage = ""
     )
-
   }
 
 
@@ -263,3 +271,12 @@ class AssetPlayer(private val context: Context) {
     delay(1000) // chord duration
   }
 }
+
+
+//  fun toggleVoiceRecording(isRecording: Boolean) {
+//    if (isRecording) {
+//      startExerciseLoop()
+//    } else {
+//      stopVoiceListening()
+//    }
+//  }
