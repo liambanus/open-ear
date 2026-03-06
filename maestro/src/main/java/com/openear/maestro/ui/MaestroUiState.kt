@@ -4,7 +4,11 @@ data class MaestroUiState(
   val exerciseState: ExerciseState = ExerciseState.IDLE,
   val userMessage: String = "",
   val correctAnswer: String = "",
-  val heardTranscription: String = ""
+  val heardTranscription: String = "",
+  val currentInstrument: String = "",
+  val burstProgressText: String = "",
+  val burstSummaryText: String = "",
+  val reviewMessage: String = ""
 ) {
   val showMainMenu: Boolean
     get() = exerciseState == ExerciseState.IDLE
@@ -22,6 +26,6 @@ enum class ExerciseState {
   LISTENING,
   EVALUATING,
   FEEDBACK,
-  LOOPING
+  LOOPING,
+  REVIEWING
 }
-

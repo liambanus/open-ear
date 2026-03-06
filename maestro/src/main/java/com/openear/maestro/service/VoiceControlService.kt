@@ -48,6 +48,8 @@ class VoiceControlService : Service() {
   interface Port {
     fun beginListening(
       expectedProgression: List<String>,
+      onTranscription: (String) -> Unit,
+      onRepeat: () -> Unit,
       onCorrect: () -> Unit,
       onIncorrect: (List<String>) -> Unit
     )
@@ -83,6 +85,8 @@ class VoiceControlService : Service() {
 
     override fun beginListening(
       expectedProgression: List<String>,
+      onTranscription: (String) -> Unit,
+      onRepeat: () -> Unit,
       onCorrect: () -> Unit,
       onIncorrect: (List<String>) -> Unit
     )
@@ -93,9 +97,18 @@ class VoiceControlService : Service() {
         delay(LISTEN_DELAY_MS)
         val result = collectAndProcessOnce(expectedProgression)
         when (result) {
-          ListenResult.Correct -> onCorrect()
-          is ListenResult.Incorrect -> onIncorrect(result.transcribed)
-          ListenResult.Repeat -> onIncorrect(emptyList())
+          is ListenResult.Correct -> {
+            onTranscription(result.transcription)
+            onCorrect()
+          }
+          is ListenResult.Incorrect -> {
+            onTranscription(result.transcription)
+            onIncorrect(result.transcribed)
+          }
+          is ListenResult.Repeat -> {
+            onTranscription(result.transcription)
+            onRepeat()
+          }
         }
       }
     }
@@ -177,9 +190,12 @@ class VoiceControlService : Service() {
 //  }
 
   private sealed class ListenResult {
-    object Correct : ListenResult()
-    object Repeat : ListenResult()
-    data class Incorrect(val transcribed: List<String>) : ListenResult()
+    data class Correct(val transcription: String) : ListenResult()
+    data class Repeat(val transcription: String) : ListenResult()
+    data class Incorrect(
+      val transcribed: List<String>,
+      val transcription: String
+    ) : ListenResult()
   }
   private suspend fun collectAndProcessOnce(
     expectedProgression: List<String>
@@ -192,7 +208,7 @@ class VoiceControlService : Service() {
 
     if (whisperContext == 0L) {
       logRepeat("whisperContext=0")
-      return ListenResult.Repeat
+      return ListenResult.Repeat("")
     }
 
     val transcription = withContext(whisperDispatcher) {
@@ -203,25 +219,25 @@ class VoiceControlService : Service() {
 
     if (transcription.isBlank()) {
       logRepeat("blank transcription")
-      return ListenResult.Repeat
+      return ListenResult.Repeat("")
     }
 
     Log.i(TAG, "Transcription='$transcription'")
 
     val parsed = commandParser.parse(transcription)
     if (parsed !is CommandParser.Result.Answer) {
-      logIncorrect(transcription, emptyList())
-      return ListenResult.Incorrect(emptyList())
+      logRepeat("unparsed transcription='$transcription'")
+      return ListenResult.Repeat(transcription)
     }
 
-    val normalized = parsed.tokens.map { normalizeToken(it) }
+    val normalized = normalizeAnswerTokens(parsed.tokens)
 
     return if (evaluator.isCorrect(expectedProgression, normalized)) {
       Log.i(TAG, "ListenResult=CORRECT normalized=$normalized")
-      ListenResult.Correct
+      ListenResult.Correct(transcription)
     } else {
       logIncorrect(transcription, normalized)
-      ListenResult.Incorrect(normalized)
+      ListenResult.Incorrect(normalized, transcription)
     }
   }
 
@@ -237,8 +253,29 @@ class VoiceControlService : Service() {
       "four" -> "4"
       "five" -> "5"
       "six" -> "6"
+      "seven" -> "7"
+      "flat" -> "b"
+      "sharp" -> "#"
       else -> cleaned
     }
+  }
+
+  private fun normalizeAnswerTokens(tokens: List<String>): List<String> {
+    val raw = tokens.map { normalizeToken(it) }.filter { it.isNotBlank() }
+    val output = mutableListOf<String>()
+    var i = 0
+    while (i < raw.size) {
+      val current = raw[i]
+      val next = raw.getOrNull(i + 1)
+      if ((current == "b" || current == "#") && next != null && next.matches(Regex("[1-7]"))) {
+        output += "$current$next"
+        i += 2
+        continue
+      }
+      output += current
+      i += 1
+    }
+    return output
   }
 
 

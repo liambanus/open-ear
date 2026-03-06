@@ -13,15 +13,25 @@ class ProgressionAnswerEvaluator {
 
     // Defensive normalization (cheap, safe)
     val expected = expectedProgression
-      .map { it.trim() }
+      .map { canonicalizeDegreeToken(it) }
       .filter { it.isNotBlank() }
 
     val answer = userAnswer
-      .map { it.trim() }
+      .map { canonicalizeDegreeToken(it) }
       .filter { it.isNotBlank() }
 
     // Must match exactly in length and order
     return expected == answer
+  }
+
+  private fun canonicalizeDegreeToken(token: String): String {
+    val trimmed = token.trim().lowercase()
+    if (trimmed.isBlank()) return ""
+
+    // Position prefixes (b/#) are ignored for answer grading:
+    // b4, #4, and 4 are all treated as degree 4.
+    val stripped = trimmed.removePrefix("b").removePrefix("#")
+    return stripped
   }
 
   /*
