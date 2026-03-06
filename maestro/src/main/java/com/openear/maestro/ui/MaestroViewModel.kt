@@ -3,11 +3,13 @@ package com.openear.maestro.ui
 import android.content.Context
 import android.media.MediaPlayer
 import android.media.MediaRecorder
+import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.openear.maestro.service.VoiceControlService
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +51,21 @@ class MaestroViewModel : ViewModel() {
   private val _isSnippetRecording = MutableStateFlow(false)
   val isSnippetRecording: StateFlow<Boolean> = _isSnippetRecording.asStateFlow()
 
+  private val _voicingEnabled = MutableStateFlow(false)
+  val voicingEnabled: StateFlow<Boolean> = _voicingEnabled.asStateFlow()
+
+  private val _voicingOverlayPolicy = MutableStateFlow(VoicingOverlayPolicy.FIXED)
+  val voicingOverlayPolicy: StateFlow<VoicingOverlayPolicy> = _voicingOverlayPolicy.asStateFlow()
+
+  private val _fixedVoicingTone = MutableStateFlow(VoicingTone.ROOT)
+  val fixedVoicingTone: StateFlow<VoicingTone> = _fixedVoicingTone.asStateFlow()
+
+  private val _voicingBackingMode = MutableStateFlow(VoicingBackingMode.GUITAR_LOW)
+  val voicingBackingMode: StateFlow<VoicingBackingMode> = _voicingBackingMode.asStateFlow()
+
+  private val _voicingTaskMode = MutableStateFlow(VoicingTaskMode.PROGRESSION)
+  val voicingTaskMode: StateFlow<VoicingTaskMode> = _voicingTaskMode.asStateFlow()
+
   private lateinit var assetPlayer: AssetPlayer
   private var voiceControlPort: VoiceControlService.Port? = null
 
@@ -68,6 +85,8 @@ class MaestroViewModel : ViewModel() {
   private var misidentifiedProgressions: List<List<String>> = emptyList()
   private var snippetRecorder: MediaRecorder? = null
   private var activeSnippetRecordPath: String? = null
+  private var quizPausedUntilMs: Long = 0L
+  private var activeListenDeferred: CompletableDeferred<ListenAttemptResult>? = null
 
   fun initialize(context: Context) {
     assetPlayer = AssetPlayer(context.applicationContext)
@@ -103,8 +122,31 @@ class MaestroViewModel : ViewModel() {
     }
   }
 
+  fun toggleVoicingMode() {
+    _voicingEnabled.value = !_voicingEnabled.value
+  }
+
+  fun setVoicingOverlayPolicy(policy: VoicingOverlayPolicy) {
+    _voicingOverlayPolicy.value = policy
+  }
+
+  fun setFixedVoicingTone(tone: VoicingTone) {
+    _fixedVoicingTone.value = tone
+  }
+
+  fun setVoicingBackingMode(mode: VoicingBackingMode) {
+    _voicingBackingMode.value = mode
+  }
+
+  fun setVoicingTaskMode(mode: VoicingTaskMode) {
+    _voicingTaskMode.value = mode
+  }
+
   fun playReferenceChord(chord: String) {
     viewModelScope.launch {
+      if (recordingActive) {
+        pauseQuizForManualReference()
+      }
       _uiState.value = _uiState.value.copy(
         userMessage = "Reference: $chord on ${_referenceInstrument.value}",
         currentInstrument = _referenceInstrument.value
@@ -461,15 +503,44 @@ class MaestroViewModel : ViewModel() {
     var solved = false
 
     val questionInstrument = nextPlaybackInstrument()
+    val isChordToneTask = _voicingEnabled.value && _voicingTaskMode.value == VoicingTaskMode.CHORD_TONE
+    val questionTone = if (isChordToneTask) {
+      when (_voicingOverlayPolicy.value) {
+        VoicingOverlayPolicy.FIXED -> _fixedVoicingTone.value
+        VoicingOverlayPolicy.RANDOM -> VoicingTone.entries[random.nextInt(VoicingTone.entries.size)]
+      }
+    } else {
+      null
+    }
+    val expectedAnswer = if (questionTone != null) {
+      listOf(questionTone.answerToken)
+    } else {
+      progression
+    }
+
     while (recordingActive && !solved) {
-      playProgression(progression, questionInstrument)
+      waitForQuizPauseWindowIfNeeded()
+      playProgression(progression, questionInstrument, forcedVoicingTone = questionTone)
 
       _uiState.value = _uiState.value.copy(
         exerciseState = ExerciseState.LISTENING,
-        userMessage = "Say the progression now."
+        userMessage = if (questionTone != null) {
+          "Progression ${progression.joinToString("-")}. Identify the chord tone: one, three, or five."
+        } else {
+          "Say the progression now."
+        }
       )
 
-      when (val listenResult = listenForSingleAttempt(port, progression)) {
+      when (val listenResult = listenForSingleAttempt(port, expectedAnswer)) {
+        is ListenAttemptResult.ManualPause -> {
+          updateTranscriptionResult("Quiz resumes in 2s.")
+          _uiState.value = _uiState.value.copy(
+            exerciseState = ExerciseState.PLAYING,
+            userMessage = "Paused for manual reference. Replaying progression shortly."
+          )
+          waitForQuizPauseWindowIfNeeded()
+        }
+
         is ListenAttemptResult.Repeat -> {
           updateTranscriptionResult("No parseable guess detected. Replaying.")
           _uiState.value = _uiState.value.copy(
@@ -482,9 +553,15 @@ class MaestroViewModel : ViewModel() {
           explicitGuessCount += 1
           wrongGuessCount += 1
 
+          val feedbackMessage = if (questionTone != null) {
+            evaluateToneFeedback(questionTone, listenResult.heard)
+          } else {
+            evaluateFeedback(progression, listenResult.heard)
+          }
+
           _uiState.value = _uiState.value.copy(
             exerciseState = ExerciseState.PLAYING,
-            userMessage = evaluateFeedback(progression, listenResult.heard),
+            userMessage = feedbackMessage,
             heardTranscription =
               if (listenResult.heard.isEmpty()) "" else "I heard: ${listenResult.heard.joinToString("-")}"
           )
@@ -512,6 +589,9 @@ class MaestroViewModel : ViewModel() {
     expectedProgression: List<String>
   ): ListenAttemptResult =
     suspendCancellableCoroutine { cont ->
+      val deferred = CompletableDeferred<ListenAttemptResult>()
+      activeListenDeferred = deferred
+
       port.beginListening(
         expectedProgression = expectedProgression,
         onTranscription = { transcription ->
@@ -520,20 +600,42 @@ class MaestroViewModel : ViewModel() {
           )
         },
         onRepeat = {
-          if (cont.isActive) cont.resume(ListenAttemptResult.Repeat)
+          deferred.complete(ListenAttemptResult.Repeat)
         },
         onCorrect = {
-          if (cont.isActive) cont.resume(ListenAttemptResult.Correct)
+          deferred.complete(ListenAttemptResult.Correct)
         },
         onIncorrect = { heard ->
-          if (cont.isActive) cont.resume(ListenAttemptResult.Incorrect(heard))
+          deferred.complete(ListenAttemptResult.Incorrect(heard))
         }
       )
 
+      viewModelScope.launch {
+        val result = deferred.await()
+        if (cont.isActive) {
+          cont.resume(result)
+        }
+      }
+
       cont.invokeOnCancellation {
+        activeListenDeferred = null
         port.stopListening()
       }
     }
+
+  private fun pauseQuizForManualReference() {
+    quizPausedUntilMs = SystemClock.elapsedRealtime() + 2_500L
+    voiceControlPort?.stopListening()
+    activeListenDeferred?.complete(ListenAttemptResult.ManualPause)
+  }
+
+  private suspend fun waitForQuizPauseWindowIfNeeded() {
+    while (recordingActive) {
+      val remainingMs = quizPausedUntilMs - SystemClock.elapsedRealtime()
+      if (remainingMs <= 0) return
+      delay(minOf(remainingMs, 100L))
+    }
+  }
 
   private fun startAutomaticReview() {
     stopReview()
@@ -567,13 +669,46 @@ class MaestroViewModel : ViewModel() {
 
   private suspend fun playProgression(progression: List<String>) {
     val instrument = nextPlaybackInstrument()
-    playProgression(progression, instrument)
+    playProgression(progression, instrument, forcedVoicingTone = null)
   }
 
   private suspend fun playProgression(
     progression: List<String>,
-    instrument: String
+    instrument: String,
+    forcedVoicingTone: VoicingTone?
   ) {
+    if (_voicingEnabled.value) {
+      val (chordInstrument, overlayInstrument, lowerBackingOctave, raiseOverlayOctave, modeLabel) =
+        when (_voicingBackingMode.value) {
+          VoicingBackingMode.GUITAR_LOW -> {
+            Quintuple("guitar-acoustic", "piano", true, false, "guitar(low) + piano")
+          }
+
+          VoicingBackingMode.PIANO_LOW -> {
+            Quintuple("piano", "piano", true, true, "piano(low) + piano(high)")
+          }
+        }
+      _uiState.value = _uiState.value.copy(
+        currentInstrument = modeLabel,
+        userMessage = _uiState.value.userMessage
+      )
+      for (chord in progression) {
+        val tone = forcedVoicingTone ?: when (_voicingOverlayPolicy.value) {
+          VoicingOverlayPolicy.FIXED -> _fixedVoicingTone.value
+          VoicingOverlayPolicy.RANDOM -> VoicingTone.entries[random.nextInt(VoicingTone.entries.size)]
+        }
+        assetPlayer.playChordWithOverlay(
+          chord = chord,
+          chordInstrument = chordInstrument,
+          overlayInstrument = overlayInstrument,
+          overlayTone = tone,
+          lowerBackingOctave = lowerBackingOctave,
+          raiseOverlayOctave = raiseOverlayOctave
+        )
+        delay(500)
+      }
+      return
+    }
 
     _uiState.value = _uiState.value.copy(
       currentInstrument = instrument,
@@ -607,11 +742,27 @@ class MaestroViewModel : ViewModel() {
     }
   }
 
+  private fun evaluateToneFeedback(expectedTone: VoicingTone, heard: List<String>): String {
+    if (heard.isEmpty()) return "Did not catch a clear guess."
+    val token = heard.firstOrNull() ?: return "Did not catch a clear guess."
+    return if (token == expectedTone.answerToken) {
+      "Correct."
+    } else {
+      val expectedText = when (expectedTone) {
+        VoicingTone.ROOT -> "one"
+        VoicingTone.THIRD -> "three"
+        VoicingTone.FIFTH -> "five"
+      }
+      "Incorrect. Expected $expectedText."
+    }
+  }
+
   private fun updateTranscriptionResult(message: String) {
     _transcriptionResult.value = message
   }
 
   private sealed class ListenAttemptResult {
+    data object ManualPause : ListenAttemptResult()
     data object Repeat : ListenAttemptResult()
     data object Correct : ListenAttemptResult()
     data class Incorrect(val heard: List<String>) : ListenAttemptResult()
@@ -767,6 +918,42 @@ enum class SnippetSource {
   FILE
 }
 
+enum class VoicingOverlayPolicy {
+  FIXED,
+  RANDOM
+}
+
+enum class VoicingTone {
+  ROOT,
+  THIRD,
+  FIFTH;
+
+  val answerToken: String
+    get() = when (this) {
+      ROOT -> "1"
+      THIRD -> "3"
+      FIFTH -> "5"
+    }
+}
+
+enum class VoicingTaskMode {
+  PROGRESSION,
+  CHORD_TONE
+}
+
+enum class VoicingBackingMode {
+  GUITAR_LOW,
+  PIANO_LOW
+}
+
+private data class Quintuple<A, B, C, D, E>(
+  val first: A,
+  val second: B,
+  val third: C,
+  val fourth: D,
+  val fifth: E
+)
+
 class AssetPlayer(private val context: Context) {
 
   private val chordMapByInstrument = mapOf(
@@ -816,6 +1003,87 @@ class AssetPlayer(private val context: Context) {
     }
 
     delay(1000)
+  }
+
+  suspend fun playChordWithOverlay(
+    chord: String,
+    chordInstrument: String,
+    overlayInstrument: String,
+    overlayTone: VoicingTone,
+    lowerBackingOctave: Boolean = false,
+    raiseOverlayOctave: Boolean = false
+  ) {
+    val backingMap = chordMapByInstrument[chordInstrument]
+      ?: chordMapByInstrument["guitar-acoustic"]
+      ?: return
+    val overlayMap = chordMapByInstrument[overlayInstrument]
+      ?: chordMapByInstrument["piano"]
+      ?: return
+
+    val backingNotes = (backingMap[chord] ?: return).map { note ->
+      if (lowerBackingOctave) shiftNoteFileOctave(note, -1, chordInstrument) else note
+    }
+    val overlayChordNotes = overlayMap[chord] ?: return
+    val overlayIndex = when (overlayTone) {
+      VoicingTone.ROOT -> 0
+      VoicingTone.THIRD -> 1
+      VoicingTone.FIFTH -> 2
+    }
+    val overlayNoteBase = overlayChordNotes.getOrNull(overlayIndex) ?: return
+    val overlayNote = if (raiseOverlayOctave) {
+      shiftNoteFileOctave(overlayNoteBase, +1, overlayInstrument)
+    } else {
+      overlayNoteBase
+    }
+
+    val players = mutableListOf<MediaPlayer>()
+    backingNotes.forEach { noteFile ->
+      runCatching {
+        MediaPlayer().apply {
+          val afd = context.assets.openFd("$chordInstrument/$noteFile")
+          setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+          afd.close()
+          prepare()
+        }
+      }.onSuccess { players += it }
+        .onFailure { Log.w("AUDIO", "Failed backing note $chordInstrument/$noteFile: ${it.message}") }
+    }
+
+    runCatching {
+      MediaPlayer().apply {
+        val afd = context.assets.openFd("$overlayInstrument/$overlayNote")
+        setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+        afd.close()
+        prepare()
+      }
+    }.onSuccess { players += it }
+      .onFailure { Log.w("AUDIO", "Failed overlay note $overlayInstrument/$overlayNote: ${it.message}") }
+
+    players.forEach { mp ->
+      mp.start()
+      mp.setOnCompletionListener { it.release() }
+    }
+
+    delay(1000)
+  }
+
+  private fun shiftNoteFileOctave(noteFile: String, delta: Int, instrument: String): String {
+    val match = Regex("^([A-G]s?)(\\d)\\.mp3$").find(noteFile) ?: return noteFile
+    val noteName = match.groupValues[1]
+    val octave = match.groupValues[2].toIntOrNull() ?: return noteFile
+    val shiftedOctave = octave + delta
+    if (shiftedOctave < 0) return noteFile
+    val shifted = "$noteName$shiftedOctave.mp3"
+    return if (assetExists("$instrument/$shifted")) shifted else noteFile
+  }
+
+  private fun assetExists(assetPath: String): Boolean {
+    return try {
+      context.assets.openFd(assetPath).close()
+      true
+    } catch (_: Throwable) {
+      false
+    }
   }
 
   suspend fun playAssetClip(assetPath: String) {
