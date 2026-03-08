@@ -69,6 +69,9 @@ class MaestroViewModel : ViewModel() {
   private val _voicingTaskMode = MutableStateFlow(VoicingTaskMode.PROGRESSION)
   val voicingTaskMode: StateFlow<VoicingTaskMode> = _voicingTaskMode.asStateFlow()
 
+  private val _voicingAdvancedMix = MutableStateFlow(false)
+  val voicingAdvancedMix: StateFlow<Boolean> = _voicingAdvancedMix.asStateFlow()
+
   private lateinit var assetPlayer: AssetPlayer
   private var voiceControlPort: VoiceControlService.Port? = null
 
@@ -78,6 +81,7 @@ class MaestroViewModel : ViewModel() {
   private var exerciseJob: Job? = null
   private var playbackLoopJob: Job? = null
   private var reviewJob: Job? = null
+  private var chordToneCycleJob: Job? = null
 
   private val random = Random(System.currentTimeMillis())
 
@@ -143,6 +147,10 @@ class MaestroViewModel : ViewModel() {
 
   fun setVoicingTaskMode(mode: VoicingTaskMode) {
     _voicingTaskMode.value = mode
+  }
+
+  fun toggleVoicingAdvancedMix() {
+    _voicingAdvancedMix.value = !_voicingAdvancedMix.value
   }
 
   fun setRecordingFolder(folder: RecordingFolder) {
@@ -359,13 +367,19 @@ class MaestroViewModel : ViewModel() {
   }
 
   fun startExercise() {
-    startBurstExercise()
+    if (_voicingEnabled.value && _voicingTaskMode.value == VoicingTaskMode.CHORD_TONE) {
+      startChordToneBackgroundCycle()
+    } else {
+      startBurstExercise()
+    }
   }
 
   fun stopExercise() {
     recordingActive = false
     exerciseJob?.cancel()
     exerciseJob = null
+    chordToneCycleJob?.cancel()
+    chordToneCycleJob = null
     voiceControlPort?.stopListening()
     stopPlaybackLoop()
     stopReview()
@@ -414,6 +428,8 @@ class MaestroViewModel : ViewModel() {
   }
 
   private fun startBurstExercise() {
+    chordToneCycleJob?.cancel()
+    chordToneCycleJob = null
     stopPlaybackLoop()
     stopReview()
 
@@ -713,6 +729,105 @@ class MaestroViewModel : ViewModel() {
     reviewJob = null
   }
 
+  private fun startChordToneBackgroundCycle() {
+    stopPlaybackLoop()
+    stopReview()
+    voiceControlPort?.stopListening()
+    exerciseJob?.cancel()
+    exerciseJob = null
+    chordToneCycleJob?.cancel()
+    chordToneCycleJob = null
+    recordingActive = false
+
+    val progressions = listOf(
+      listOf("1", "4"),
+      listOf("1", "5"),
+      listOf("lo4", "1", "lo5")
+    )
+    val toneCycle = listOf(VoicingTone.ROOT, VoicingTone.THIRD, VoicingTone.FIFTH)
+    val setup = currentVoicingPlaybackSetup()
+
+    _uiState.value = _uiState.value.copy(
+      exerciseState = ExerciseState.PLAYING,
+      userMessage = "Chord tone background mode running.",
+      currentInstrument = setup.modeLabel,
+      heardTranscription = "",
+      burstProgressText = "",
+      burstSummaryText = "",
+      reviewMessage = ""
+    )
+    updateTranscriptionResult("")
+
+    chordToneCycleJob = viewModelScope.launch {
+      var progressionIndex = 0
+      var toneIndex = 0
+
+      while (true) {
+        val progression = progressions[progressionIndex]
+        val tonesForProgression = if (_voicingAdvancedMix.value) {
+          progression.indices.map { idx ->
+            toneCycle[(toneIndex + idx) % toneCycle.size]
+          }
+        } else {
+          List(progression.size) { toneCycle[toneIndex % toneCycle.size] }
+        }
+
+        _uiState.value = _uiState.value.copy(
+          exerciseState = ExerciseState.PLAYING,
+          userMessage = "Listen: ${progression.joinToString("-")}",
+          reviewMessage = ""
+        )
+
+        repeat(4) {
+          playProgressionWithToneMap(progression, tonesForProgression, setup)
+          delay(900)
+        }
+
+        for (i in progression.indices) {
+          assetPlayer.playChordArpeggioThenOverlay(
+            chord = progression[i],
+            chordInstrument = setup.chordInstrument,
+            overlayInstrument = setup.overlayInstrument,
+            overlayTone = tonesForProgression[i],
+            lowerBackingOctave = setup.lowerBackingOctave,
+            raiseOverlayOctave = setup.raiseOverlayOctave,
+            arpeggioGapMs = 700L
+          )
+          delay(900)
+        }
+
+        val answerTokens = if (_voicingAdvancedMix.value) {
+          tonesForProgression.map { it.answerToken }
+        } else {
+          listOf(tonesForProgression.first().answerToken)
+        }
+        val answerWords = answerTokens.joinToString("-") { token ->
+          when (token) {
+            "1" -> "one"
+            "3" -> "three"
+            "5" -> "five"
+            else -> token
+          }
+        }
+        _uiState.value = _uiState.value.copy(
+          exerciseState = ExerciseState.FEEDBACK,
+          reviewMessage = "Answer: $answerWords"
+        )
+        updateTranscriptionResult("Answer: $answerWords")
+        assetPlayer.playSpokenAnswerTokens(answerTokens)
+        delay(900)
+
+        repeat(2) {
+          playProgressionWithToneMap(progression, tonesForProgression, setup)
+          delay(900)
+        }
+
+        progressionIndex = (progressionIndex + 1) % progressions.size
+        toneIndex = (toneIndex + 1) % toneCycle.size
+      }
+    }
+  }
+
   private suspend fun playProgression(progression: List<String>) {
     val instrument = nextPlaybackInstrument()
     playProgression(progression, instrument, forcedVoicingTone = null)
@@ -725,15 +840,7 @@ class MaestroViewModel : ViewModel() {
   ) {
     if (_voicingEnabled.value) {
       val (chordInstrument, overlayInstrument, lowerBackingOctave, raiseOverlayOctave, modeLabel) =
-        when (_voicingBackingMode.value) {
-          VoicingBackingMode.GUITAR_LOW -> {
-            Quintuple("guitar-acoustic", "piano", true, false, "guitar(low) + piano")
-          }
-
-          VoicingBackingMode.PIANO_LOW -> {
-            Quintuple("piano", "piano", true, true, "piano(low) + piano(high)")
-          }
-        }
+        currentVoicingPlaybackSetup()
       _uiState.value = _uiState.value.copy(
         currentInstrument = modeLabel,
         userMessage = _uiState.value.userMessage
@@ -769,6 +876,37 @@ class MaestroViewModel : ViewModel() {
 
   private fun nextPlaybackInstrument(): String {
     return if (random.nextBoolean()) "piano" else "guitar-acoustic"
+  }
+
+  private suspend fun playProgressionWithToneMap(
+    progression: List<String>,
+    tones: List<VoicingTone>,
+    setup: VoicingPlaybackSetup
+  ) {
+    _uiState.value = _uiState.value.copy(currentInstrument = setup.modeLabel)
+    for (i in progression.indices) {
+      assetPlayer.playChordWithOverlay(
+        chord = progression[i],
+        chordInstrument = setup.chordInstrument,
+        overlayInstrument = setup.overlayInstrument,
+        overlayTone = tones.getOrElse(i) { VoicingTone.ROOT },
+        lowerBackingOctave = setup.lowerBackingOctave,
+        raiseOverlayOctave = setup.raiseOverlayOctave
+      )
+      delay(700)
+    }
+  }
+
+  private fun currentVoicingPlaybackSetup(): VoicingPlaybackSetup {
+    return when (_voicingBackingMode.value) {
+      VoicingBackingMode.GUITAR_LOW -> {
+        VoicingPlaybackSetup("guitar-acoustic", "piano", true, false, "guitar(low) + piano")
+      }
+
+      VoicingBackingMode.PIANO_LOW -> {
+        VoicingPlaybackSetup("piano", "piano", true, true, "piano(low) + piano(high)")
+      }
+    }
   }
 
   private fun evaluateFeedback(expected: List<String>, heard: List<String>): String {
@@ -1037,12 +1175,12 @@ enum class VoicingBackingMode {
   PIANO_LOW
 }
 
-private data class Quintuple<A, B, C, D, E>(
-  val first: A,
-  val second: B,
-  val third: C,
-  val fourth: D,
-  val fifth: E
+private data class VoicingPlaybackSetup(
+  val chordInstrument: String,
+  val overlayInstrument: String,
+  val lowerBackingOctave: Boolean,
+  val raiseOverlayOctave: Boolean,
+  val modeLabel: String
 )
 
 class AssetPlayer(private val context: Context) {
@@ -1156,6 +1294,51 @@ class AssetPlayer(private val context: Context) {
     }
 
     delay(1000)
+  }
+
+  suspend fun playChordArpeggioThenOverlay(
+    chord: String,
+    chordInstrument: String,
+    overlayInstrument: String,
+    overlayTone: VoicingTone,
+    lowerBackingOctave: Boolean = false,
+    raiseOverlayOctave: Boolean = false,
+    arpeggioGapMs: Long = 500L
+  ) {
+    val backingMap = chordMapByInstrument[chordInstrument]
+      ?: chordMapByInstrument["guitar-acoustic"]
+      ?: return
+    val backingNotes = (backingMap[chord] ?: return).map { note ->
+      if (lowerBackingOctave) shiftNoteFileOctave(note, -1, chordInstrument) else note
+    }
+    for (noteFile in backingNotes) {
+      playSingleNote(chordInstrument, noteFile)
+      delay(arpeggioGapMs)
+    }
+    delay(220)
+    playChordWithOverlay(
+      chord = chord,
+      chordInstrument = chordInstrument,
+      overlayInstrument = overlayInstrument,
+      overlayTone = overlayTone,
+      lowerBackingOctave = lowerBackingOctave,
+      raiseOverlayOctave = raiseOverlayOctave
+    )
+  }
+
+  private fun playSingleNote(instrument: String, noteFile: String) {
+    runCatching {
+      MediaPlayer().apply {
+        val afd = context.assets.openFd("$instrument/$noteFile")
+        setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+        afd.close()
+        prepare()
+        start()
+        setOnCompletionListener { it.release() }
+      }
+    }.onFailure {
+      Log.w("AUDIO", "Failed single note $instrument/$noteFile: ${it.message}")
+    }
   }
 
   private fun shiftNoteFileOctave(noteFile: String, delta: Int, instrument: String): String {

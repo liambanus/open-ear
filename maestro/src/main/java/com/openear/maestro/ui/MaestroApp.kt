@@ -44,6 +44,7 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
   val fixedVoicingTone by viewModel.fixedVoicingTone.collectAsState()
   val voicingBackingMode by viewModel.voicingBackingMode.collectAsState()
   val voicingTaskMode by viewModel.voicingTaskMode.collectAsState()
+  val voicingAdvancedMix by viewModel.voicingAdvancedMix.collectAsState()
 
   LaunchedEffect(Unit) {
     viewModel.initialize(context)
@@ -224,6 +225,11 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
         onClick = { viewModel.setVoicingTaskMode(VoicingTaskMode.CHORD_TONE) }
       ) {
         Text(if (voicingTaskMode == VoicingTaskMode.CHORD_TONE) "Chord Tone*" else "Chord Tone")
+      }
+    }
+    if (voicingTaskMode == VoicingTaskMode.CHORD_TONE) {
+      OutlinedButton(onClick = { viewModel.toggleVoicingAdvancedMix() }) {
+        Text(if (voicingAdvancedMix) "Advanced Mix: ON" else "Advanced Mix: OFF")
       }
     }
     Row {
