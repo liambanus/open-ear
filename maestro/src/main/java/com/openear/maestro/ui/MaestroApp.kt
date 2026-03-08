@@ -5,7 +5,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -39,7 +41,6 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
   val loopProgressionLabels by viewModel.loopProgressionLabels.collectAsState()
   val isSnippetRecording by viewModel.isSnippetRecording.collectAsState()
   val recordingFolder by viewModel.recordingFolder.collectAsState()
-  val voicingEnabled by viewModel.voicingEnabled.collectAsState()
   val voicingOverlayPolicy by viewModel.voicingOverlayPolicy.collectAsState()
   val fixedVoicingTone by viewModel.fixedVoicingTone.collectAsState()
   val voicingBackingMode by viewModel.voicingBackingMode.collectAsState()
@@ -53,14 +54,15 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
   var showRecordingManager by remember { mutableStateOf(false) }
   var playbackLoopExpanded by remember { mutableStateOf(false) }
   var snippetExpanded by remember { mutableStateOf(false) }
-  var referenceInstrumentExpanded by remember { mutableStateOf(false) }
   var selectedProgressionIndex by remember { mutableStateOf(0) }
   var recordingSnippetExpanded by remember { mutableStateOf(false) }
   var recordingFolderExpanded by remember { mutableStateOf(false) }
   var snippetNameText by remember { mutableStateOf("") }
 
   val selectedSnippet = snippetOptions.firstOrNull { it.assetPath == selectedSnippetAssetPath }
+  val selectedSnippetShort = selectedSnippet?.displayName?.takeLast(6) ?: "None"
   val statusText = listOfNotNull(
+    uiState.userMessage.takeIf { it.isNotBlank() },
     uiState.burstProgressText.takeIf { it.isNotBlank() }?.let { "Progress: $it" },
     uiState.currentInstrument.takeIf { it.isNotBlank() }?.let { "Instrument: $it" },
     uiState.heardTranscription.takeIf { it.isNotBlank() },
@@ -144,31 +146,105 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
     return
   }
 
-  Column(modifier = Modifier.padding(12.dp)) {
+  Column(
+    modifier = Modifier.fillMaxSize().padding(10.dp),
+    verticalArrangement = Arrangement.SpaceBetween
+  ) {
     Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.SpaceBetween
     ) {
-      Button(
-        onClick = {
-          if (uiState.exerciseState == ExerciseState.IDLE) {
-            viewModel.startExercise()
-          } else {
-            viewModel.stopExercise()
+      Column(
+        modifier = Modifier.fillMaxWidth(0.49f).padding(end = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+      ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+          Button(
+            onClick = {
+              if (uiState.exerciseState == ExerciseState.IDLE) viewModel.startExercise()
+              else viewModel.stopExercise()
+            }
+          ) {
+            Text(if (uiState.exerciseState == ExerciseState.IDLE) "Start Quiz" else "Stop Quiz")
+          }
+          OutlinedButton(onClick = { viewModel.startReviewOfMisidentified() }) {
+            Text("Rev")
           }
         }
-      ) {
-        Text(
-          if (uiState.exerciseState == ExerciseState.IDLE)
-            "Start Quiz"
-          else
-            "Stop Quiz"
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+          OutlinedButton(onClick = { viewModel.decreaseBurstSize() }) { Text("-") }
+          Text("Burst $burstSize", modifier = Modifier.padding(vertical = 12.dp))
+          OutlinedButton(onClick = { viewModel.increaseBurstSize() }) { Text("+") }
+        }
+        OutlinedButton(onClick = { viewModel.toggleAutoReviewEnabled() }) {
+          Text(if (autoReviewEnabled) "Auto Review ON" else "Auto Review OFF")
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+          OutlinedButton(
+            onClick = {
+              viewModel.setVoicingTaskMode(
+                if (voicingTaskMode == VoicingTaskMode.PROGRESSION) {
+                  VoicingTaskMode.CHORD_TONE
+                } else {
+                  VoicingTaskMode.PROGRESSION
+                }
+              )
+            }
+          ) {
+            Text(if (voicingTaskMode == VoicingTaskMode.CHORD_TONE) "Mode: Tone" else "Mode: Prog")
+          }
+          OutlinedButton(onClick = { viewModel.toggleVoicingAdvancedMix() }) {
+            Text(if (voicingAdvancedMix) "Adv*" else "Adv")
+          }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+          OutlinedButton(onClick = { viewModel.setVoicingBackingMode(VoicingBackingMode.PIANO_LOW) }) {
+            Text(if (voicingBackingMode == VoicingBackingMode.PIANO_LOW) "PnoLo*" else "PnoLo")
+          }
+          OutlinedButton(onClick = { viewModel.setVoicingBackingMode(VoicingBackingMode.GUITAR_LOW) }) {
+            Text(if (voicingBackingMode == VoicingBackingMode.GUITAR_LOW) "GtrLo*" else "GtrLo")
+          }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+          OutlinedButton(onClick = { viewModel.setVoicingOverlayPolicy(VoicingOverlayPolicy.FIXED) }) {
+            Text(if (voicingOverlayPolicy == VoicingOverlayPolicy.FIXED) "Fixed*" else "Fixed")
+          }
+          OutlinedButton(onClick = { viewModel.setVoicingOverlayPolicy(VoicingOverlayPolicy.RANDOM) }) {
+            Text(if (voicingOverlayPolicy == VoicingOverlayPolicy.RANDOM) "Random*" else "Random")
+          }
+        }
+        if (voicingOverlayPolicy == VoicingOverlayPolicy.FIXED) {
+          Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedButton(onClick = { viewModel.setFixedVoicingTone(VoicingTone.ROOT) }) {
+              Text(if (fixedVoicingTone == VoicingTone.ROOT) "Rt*" else "Rt")
+            }
+            OutlinedButton(onClick = { viewModel.setFixedVoicingTone(VoicingTone.THIRD) }) {
+              Text(if (fixedVoicingTone == VoicingTone.THIRD) "3rd*" else "3rd")
+            }
+            OutlinedButton(onClick = { viewModel.setFixedVoicingTone(VoicingTone.FIFTH) }) {
+              Text(if (fixedVoicingTone == VoicingTone.FIFTH) "5th*" else "5th")
+            }
+          }
+          Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedButton(onClick = { viewModel.setFixedVoicingTone(VoicingTone.FOURTH) }) {
+              Text(if (fixedVoicingTone == VoicingTone.FOURTH) "4th*" else "4th")
+            }
+            OutlinedButton(onClick = { viewModel.setFixedVoicingTone(VoicingTone.SIXTH) }) {
+              Text(if (fixedVoicingTone == VoicingTone.SIXTH) "6th*" else "6th")
+            }
+            OutlinedButton(onClick = { viewModel.setFixedVoicingTone(VoicingTone.SEVENTH) }) {
+              Text(if (fixedVoicingTone == VoicingTone.SEVENTH) "7th*" else "7th")
+            }
+          }
+        }
       }
 
-      Column {
+      Column(
+        modifier = Modifier.fillMaxWidth(0.49f).padding(start = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+      ) {
         OutlinedButton(onClick = { playbackLoopExpanded = true }) {
-          Text("Loop: ${loopProgressionLabels.getOrElse(selectedProgressionIndex) { "N/A" }}")
+          Text("Loop ${loopProgressionLabels.getOrElse(selectedProgressionIndex) { "N/A" }}")
         }
         DropdownMenu(
           expanded = playbackLoopExpanded,
@@ -184,157 +260,38 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
             )
           }
         }
-        Button(
+        OutlinedButton(
           onClick = {
-            if (uiState.exerciseState == ExerciseState.LOOPING) {
-              viewModel.stopPlaybackLoop()
-            } else {
-              viewModel.startPlaybackLoop(selectedProgressionIndex)
-            }
+            if (uiState.exerciseState == ExerciseState.LOOPING) viewModel.stopPlaybackLoop()
+            else viewModel.startPlaybackLoop(selectedProgressionIndex)
           }
         ) {
           Text(if (uiState.exerciseState == ExerciseState.LOOPING) "Stop Loop" else "Start Loop")
         }
-      }
-    }
 
-    Row {
-      OutlinedButton(onClick = { viewModel.decreaseBurstSize() }) { Text("-") }
-      Text("Burst: $burstSize", modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp))
-      OutlinedButton(onClick = { viewModel.increaseBurstSize() }) { Text("+") }
-    }
-
-    OutlinedButton(onClick = { viewModel.toggleAutoReviewEnabled() }) {
-      Text(if (autoReviewEnabled) "Auto Review: ON" else "Auto Review: OFF")
-    }
-
-    Button(onClick = { viewModel.startReviewOfMisidentified() }) {
-      Text("Review Mistakes")
-    }
-
-    OutlinedButton(onClick = { viewModel.toggleVoicingMode() }) {
-      Text(if (voicingEnabled) "Voicing Mode: ON" else "Voicing Mode: OFF")
-    }
-    Row {
-      OutlinedButton(
-        onClick = { viewModel.setVoicingTaskMode(VoicingTaskMode.PROGRESSION) }
-      ) {
-        Text(if (voicingTaskMode == VoicingTaskMode.PROGRESSION) "Progression*" else "Progression")
-      }
-      OutlinedButton(
-        onClick = { viewModel.setVoicingTaskMode(VoicingTaskMode.CHORD_TONE) }
-      ) {
-        Text(if (voicingTaskMode == VoicingTaskMode.CHORD_TONE) "Chord Tone*" else "Chord Tone")
-      }
-    }
-    if (voicingTaskMode == VoicingTaskMode.CHORD_TONE) {
-      OutlinedButton(onClick = { viewModel.toggleVoicingAdvancedMix() }) {
-        Text(if (voicingAdvancedMix) "Advanced Mix: ON" else "Advanced Mix: OFF")
-      }
-    }
-    Row {
-      OutlinedButton(
-        onClick = { viewModel.setVoicingBackingMode(VoicingBackingMode.GUITAR_LOW) }
-      ) {
-        Text(if (voicingBackingMode == VoicingBackingMode.GUITAR_LOW) "Guitar Low*" else "Guitar Low")
-      }
-      OutlinedButton(
-        onClick = { viewModel.setVoicingBackingMode(VoicingBackingMode.PIANO_LOW) }
-      ) {
-        Text(if (voicingBackingMode == VoicingBackingMode.PIANO_LOW) "Piano Low*" else "Piano Low")
-      }
-    }
-    Row {
-      OutlinedButton(
-        onClick = { viewModel.setVoicingOverlayPolicy(VoicingOverlayPolicy.FIXED) }
-      ) {
-        Text(if (voicingOverlayPolicy == VoicingOverlayPolicy.FIXED) "Fixed*" else "Fixed")
-      }
-      OutlinedButton(
-        onClick = { viewModel.setVoicingOverlayPolicy(VoicingOverlayPolicy.RANDOM) }
-      ) {
-        Text(if (voicingOverlayPolicy == VoicingOverlayPolicy.RANDOM) "Random*" else "Random")
-      }
-    }
-    if (voicingOverlayPolicy == VoicingOverlayPolicy.FIXED) {
-      Row {
-        OutlinedButton(onClick = { viewModel.setFixedVoicingTone(VoicingTone.ROOT) }) {
-          Text(if (fixedVoicingTone == VoicingTone.ROOT) "Root*" else "Root")
+        OutlinedButton(onClick = { snippetExpanded = true }) {
+          Text("Snippet: $selectedSnippetShort")
         }
-        OutlinedButton(onClick = { viewModel.setFixedVoicingTone(VoicingTone.THIRD) }) {
-          Text(if (fixedVoicingTone == VoicingTone.THIRD) "Third*" else "Third")
+        DropdownMenu(
+          expanded = snippetExpanded,
+          onDismissRequest = { snippetExpanded = false }
+        ) {
+          snippetOptions.forEach { snippet ->
+            DropdownMenuItem(
+              text = { Text("${snippet.displayName} (${snippet.progression})") },
+              onClick = {
+                viewModel.selectSnippet(snippet.assetPath)
+                snippetExpanded = false
+              }
+            )
+          }
         }
-        OutlinedButton(onClick = { viewModel.setFixedVoicingTone(VoicingTone.FIFTH) }) {
-          Text(if (fixedVoicingTone == VoicingTone.FIFTH) "Fifth*" else "Fifth")
+
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+          OutlinedButton(onClick = { viewModel.playSelectedSnippet() }) { Text("Play $selectedSnippetShort") }
+          OutlinedButton(onClick = { showRecordingManager = true }) { Text("Recordings") }
         }
       }
-    }
-
-    Row {
-      Text("Reference Instrument ")
-      OutlinedButton(onClick = { referenceInstrumentExpanded = true }) {
-        Text(if (referenceInstrument == "guitar-acoustic") "Guitar" else "Piano")
-      }
-      DropdownMenu(
-        expanded = referenceInstrumentExpanded,
-        onDismissRequest = { referenceInstrumentExpanded = false }
-      ) {
-        DropdownMenuItem(
-          text = { Text("Piano") },
-          onClick = {
-            viewModel.setReferenceInstrument("piano")
-            referenceInstrumentExpanded = false
-          }
-        )
-        DropdownMenuItem(
-          text = { Text("Guitar") },
-          onClick = {
-            viewModel.setReferenceInstrument("guitar-acoustic")
-            referenceInstrumentExpanded = false
-          }
-        )
-      }
-    }
-
-    OutlinedButton(onClick = { snippetExpanded = true }) {
-      Text("Snippet: ${selectedSnippet?.displayName ?: "None"}")
-    }
-    DropdownMenu(
-      expanded = snippetExpanded,
-      onDismissRequest = { snippetExpanded = false }
-    ) {
-      snippetOptions.forEach { snippet ->
-        DropdownMenuItem(
-          text = { Text("${snippet.displayName} (${snippet.progression})") },
-          onClick = {
-            viewModel.selectSnippet(snippet.assetPath)
-            snippetExpanded = false
-          }
-        )
-      }
-    }
-
-    Row {
-      Button(onClick = { viewModel.playSelectedSnippet() }) {
-        Text("Play Snippet")
-      }
-      OutlinedButton(onClick = { showRecordingManager = true }) {
-        Text("Manage Recordings")
-      }
-    }
-
-    Box(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(vertical = 14.dp)
-        .background(MaterialTheme.colorScheme.secondaryContainer)
-        .padding(12.dp)
-    ) {
-      Text(
-        text = statusText.ifBlank { "Waiting for quiz activity..." },
-        style = MaterialTheme.typography.bodyLarge,
-        color = MaterialTheme.colorScheme.onSecondaryContainer
-      )
     }
 
     MaestroScreen(
@@ -345,20 +302,51 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
       onReset = viewModel::reset
     )
 
-    Row {
-      Button(onClick = { viewModel.playReferenceChord("1") }) { Text("Play I") }
-      Button(onClick = { viewModel.playReferenceChord("lo4") }) { Text("Play loIV") }
+    Column(
+      modifier = Modifier.fillMaxWidth(),
+      verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center
+      ) {
+        Button(onClick = { viewModel.playReferenceChord("1") }) { Text("I") }
+        Button(onClick = { viewModel.playReferenceChord("4") }) { Text("IV") }
+        Button(onClick = { viewModel.playReferenceChord("5") }) { Text("V") }
+        Button(onClick = { viewModel.playReferenceChord("6") }) { Text("vi") }
+      }
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center
+      ) {
+        Button(onClick = { viewModel.playReferenceChord("lo4") }) { Text("loIV") }
+        Button(onClick = { viewModel.playReferenceChord("lo5") }) { Text("loV") }
+        Button(onClick = { viewModel.playReferenceChord("lo6") }) { Text("loVI") }
+        OutlinedButton(
+          onClick = {
+            viewModel.setReferenceInstrument(
+              if (referenceInstrument == "guitar-acoustic") "piano" else "guitar-acoustic"
+            )
+          }
+        ) {
+          Text(if (referenceInstrument == "guitar-acoustic") "Gtr" else "Pno")
+        }
+      }
     }
-    Row {
-      Button(onClick = { viewModel.playReferenceChord("4") }) { Text("Play IV") }
-      Button(onClick = { viewModel.playReferenceChord("lo5") }) { Text("Play loV") }
-    }
-    Row {
-      Button(onClick = { viewModel.playReferenceChord("5") }) { Text("Play V") }
-      Button(onClick = { viewModel.playReferenceChord("lo6") }) { Text("Play loVI") }
-    }
-    Row {
-      Button(onClick = { viewModel.playReferenceChord("6") }) { Text("Play vi") }
+
+    Box(
+      modifier = Modifier
+        .fillMaxWidth()
+        .height(140.dp)
+        .padding(top = 6.dp)
+        .background(MaterialTheme.colorScheme.secondaryContainer)
+        .padding(12.dp)
+    ) {
+      Text(
+        text = statusText.ifBlank { "Waiting for quiz activity..." },
+        style = MaterialTheme.typography.bodyLarge,
+        color = MaterialTheme.colorScheme.onSecondaryContainer
+      )
     }
   }
 }

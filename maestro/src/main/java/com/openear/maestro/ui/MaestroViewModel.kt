@@ -63,7 +63,7 @@ class MaestroViewModel : ViewModel() {
   private val _fixedVoicingTone = MutableStateFlow(VoicingTone.ROOT)
   val fixedVoicingTone: StateFlow<VoicingTone> = _fixedVoicingTone.asStateFlow()
 
-  private val _voicingBackingMode = MutableStateFlow(VoicingBackingMode.GUITAR_LOW)
+  private val _voicingBackingMode = MutableStateFlow(VoicingBackingMode.PIANO_LOW)
   val voicingBackingMode: StateFlow<VoicingBackingMode> = _voicingBackingMode.asStateFlow()
 
   private val _voicingTaskMode = MutableStateFlow(VoicingTaskMode.PROGRESSION)
@@ -147,6 +147,7 @@ class MaestroViewModel : ViewModel() {
 
   fun setVoicingTaskMode(mode: VoicingTaskMode) {
     _voicingTaskMode.value = mode
+    _voicingEnabled.value = mode == VoicingTaskMode.CHORD_TONE
   }
 
   fun toggleVoicingAdvancedMix() {
@@ -367,7 +368,7 @@ class MaestroViewModel : ViewModel() {
   }
 
   fun startExercise() {
-    if (_voicingEnabled.value && _voicingTaskMode.value == VoicingTaskMode.CHORD_TONE) {
+    if (_voicingTaskMode.value == VoicingTaskMode.CHORD_TONE) {
       startChordToneBackgroundCycle()
     } else {
       startBurstExercise()
@@ -535,11 +536,11 @@ class MaestroViewModel : ViewModel() {
     var exhaustedAttempts = false
 
     val questionInstrument = nextPlaybackInstrument()
-    val isChordToneTask = _voicingEnabled.value && _voicingTaskMode.value == VoicingTaskMode.CHORD_TONE
+    val isChordToneTask = _voicingTaskMode.value == VoicingTaskMode.CHORD_TONE
     val questionTone = if (isChordToneTask) {
       when (_voicingOverlayPolicy.value) {
         VoicingOverlayPolicy.FIXED -> _fixedVoicingTone.value
-        VoicingOverlayPolicy.RANDOM -> VoicingTone.entries[random.nextInt(VoicingTone.entries.size)]
+        VoicingOverlayPolicy.RANDOM -> randomQuizTone()
       }
     } else {
       null
@@ -557,7 +558,7 @@ class MaestroViewModel : ViewModel() {
       _uiState.value = _uiState.value.copy(
         exerciseState = ExerciseState.LISTENING,
         userMessage = if (questionTone != null) {
-          "Progression ${progression.joinToString("-")}. Identify the chord tone: one, three, or five."
+          buildToneQuizPrompt(progression, questionTone)
         } else {
           "Say the progression now."
         }
@@ -759,22 +760,33 @@ class MaestroViewModel : ViewModel() {
     updateTranscriptionResult("")
 
     chordToneCycleJob = viewModelScope.launch {
-      var progressionIndex = 0
-      var toneIndex = 0
+      var progressionIndex = random.nextInt(progressions.size)
+      var toneIndex = random.nextInt(toneCycle.size)
 
       while (true) {
         val progression = progressions[progressionIndex]
-        val tonesForProgression = if (_voicingAdvancedMix.value) {
-          progression.indices.map { idx ->
-            toneCycle[(toneIndex + idx) % toneCycle.size]
+        val tonesForProgression = when (_voicingOverlayPolicy.value) {
+          VoicingOverlayPolicy.FIXED -> List(progression.size) { _fixedVoicingTone.value }
+          VoicingOverlayPolicy.RANDOM -> {
+            if (_voicingAdvancedMix.value) {
+              progression.indices.map { idx ->
+                toneCycle[(toneIndex + idx) % toneCycle.size]
+              }
+            } else {
+              List(progression.size) { toneCycle[toneIndex % toneCycle.size] }
+            }
           }
-        } else {
-          List(progression.size) { toneCycle[toneIndex % toneCycle.size] }
         }
 
+        val progressionRoman = progressionToRomanText(progression)
+        val tensionHint = buildSixthOverFiveHint(progression, tonesForProgression)
         _uiState.value = _uiState.value.copy(
           exerciseState = ExerciseState.PLAYING,
-          userMessage = "Listen: ${progression.joinToString("-")}",
+          userMessage = if (tensionHint == null) {
+            "Listen over $progressionRoman"
+          } else {
+            "Listen over $progressionRoman. $tensionHint"
+          },
           reviewMessage = ""
         )
 
@@ -791,29 +803,26 @@ class MaestroViewModel : ViewModel() {
             overlayTone = tonesForProgression[i],
             lowerBackingOctave = setup.lowerBackingOctave,
             raiseOverlayOctave = setup.raiseOverlayOctave,
-            arpeggioGapMs = 700L
+            arpeggioGapMs = 700L,
+            includeOverlayInArpeggio = _voicingOverlayPolicy.value == VoicingOverlayPolicy.FIXED
           )
           delay(900)
         }
 
-        val answerTokens = if (_voicingAdvancedMix.value) {
-          tonesForProgression.map { it.answerToken }
+        val answerTones = if (_voicingAdvancedMix.value) {
+          tonesForProgression
         } else {
-          listOf(tonesForProgression.first().answerToken)
+          listOf(tonesForProgression.first())
         }
-        val answerWords = answerTokens.joinToString("-") { token ->
-          when (token) {
-            "1" -> "one"
-            "3" -> "three"
-            "5" -> "five"
-            else -> token
-          }
-        }
+        val answerTokens = answerTones.map { it.answerToken }
+        val heardText = formatToneNames(answerTones.map { it.displayName })
+        val answerSentence = "You heard $heardText over $progressionRoman."
         _uiState.value = _uiState.value.copy(
           exerciseState = ExerciseState.FEEDBACK,
-          reviewMessage = "Answer: $answerWords"
+          reviewMessage = answerSentence,
+          heardTranscription = answerSentence
         )
-        updateTranscriptionResult("Answer: $answerWords")
+        updateTranscriptionResult(answerSentence)
         assetPlayer.playSpokenAnswerTokens(answerTokens)
         delay(900)
 
@@ -848,7 +857,7 @@ class MaestroViewModel : ViewModel() {
       for (chord in progression) {
         val tone = forcedVoicingTone ?: when (_voicingOverlayPolicy.value) {
           VoicingOverlayPolicy.FIXED -> _fixedVoicingTone.value
-          VoicingOverlayPolicy.RANDOM -> VoicingTone.entries[random.nextInt(VoicingTone.entries.size)]
+          VoicingOverlayPolicy.RANDOM -> randomQuizTone()
         }
         assetPlayer.playChordWithOverlay(
           chord = chord,
@@ -932,12 +941,67 @@ class MaestroViewModel : ViewModel() {
     return if (token == expectedTone.answerToken) {
       "Correct."
     } else {
-      val expectedText = when (expectedTone) {
-        VoicingTone.ROOT -> "one"
-        VoicingTone.THIRD -> "three"
-        VoicingTone.FIFTH -> "five"
-      }
+      val expectedText = expectedTone.displayName.lowercase()
       "Incorrect. Expected $expectedText."
+    }
+  }
+
+  private fun randomQuizTone(): VoicingTone {
+    val tones = listOf(VoicingTone.ROOT, VoicingTone.THIRD, VoicingTone.FIFTH)
+    return tones[random.nextInt(tones.size)]
+  }
+
+  private fun progressionToRomanText(progression: List<String>): String =
+    progression.joinToString("-") { chordTokenToRoman(it) }
+
+  private fun chordTokenToRoman(token: String): String {
+    val lower = token.lowercase()
+    val isLow = lower.startsWith("lo")
+    val degree = lower.removePrefix("lo")
+    val roman = when (degree) {
+      "1" -> "I"
+      "2" -> "II"
+      "3" -> "III"
+      "4" -> "IV"
+      "5" -> "V"
+      "6" -> "VI"
+      "7" -> "VII"
+      else -> degree
+    }
+    return if (isLow) "lo$roman" else roman
+  }
+
+  private fun formatToneNames(names: List<String>): String {
+    return when (names.size) {
+      0 -> "nothing"
+      1 -> names.first()
+      2 -> "${names[0]} and ${names[1]}"
+      else -> names.dropLast(1).joinToString(", ") + ", and ${names.last()}"
+    }
+  }
+
+  private fun buildToneQuizPrompt(progression: List<String>, tone: VoicingTone): String {
+    val progressionText = progressionToRomanText(progression)
+    val hint = buildSixthOverFiveHint(progression, List(progression.size) { tone })
+    return if (hint == null) {
+      "Progression $progressionText. Identify the chord tone."
+    } else {
+      "Progression $progressionText. $hint Identify the chord tone."
+    }
+  }
+
+  private fun buildSixthOverFiveHint(
+    progression: List<String>,
+    tones: List<VoicingTone>
+  ): String? {
+    val hasSixthOverFive = progression.indices.any { idx ->
+      val chord = progression[idx].removePrefix("lo")
+      chord == "5" && tones.getOrElse(idx) { VoicingTone.ROOT } == VoicingTone.SIXTH
+    }
+    return if (hasSixthOverFive) {
+      "Note: 6th over V is a tense color."
+    } else {
+      null
     }
   }
 
@@ -1155,13 +1219,29 @@ enum class VoicingOverlayPolicy {
 enum class VoicingTone {
   ROOT,
   THIRD,
-  FIFTH;
+  FIFTH,
+  FOURTH,
+  SIXTH,
+  SEVENTH;
 
   val answerToken: String
     get() = when (this) {
       ROOT -> "1"
       THIRD -> "3"
       FIFTH -> "5"
+      FOURTH -> "4"
+      SIXTH -> "6"
+      SEVENTH -> "7"
+    }
+
+  val displayName: String
+    get() = when (this) {
+      ROOT -> "Root"
+      THIRD -> "Third"
+      FIFTH -> "Fifth"
+      FOURTH -> "Fourth"
+      SIXTH -> "Sixth"
+      SEVENTH -> "Seventh"
     }
 }
 
@@ -1184,6 +1264,16 @@ private data class VoicingPlaybackSetup(
 )
 
 class AssetPlayer(private val context: Context) {
+
+  private val noteNames = listOf("C", "Cs", "D", "Ds", "E", "F", "Fs", "G", "Gs", "A", "As", "B")
+  private val semitonesByTone = mapOf(
+    VoicingTone.ROOT to 0,
+    VoicingTone.THIRD to 4,
+    VoicingTone.FIFTH to 7,
+    VoicingTone.FOURTH to 5,
+    VoicingTone.SIXTH to 9,
+    VoicingTone.SEVENTH to 11
+  )
 
   private val chordMapByInstrument = mapOf(
     "piano" to mapOf(
@@ -1245,25 +1335,16 @@ class AssetPlayer(private val context: Context) {
     val backingMap = chordMapByInstrument[chordInstrument]
       ?: chordMapByInstrument["guitar-acoustic"]
       ?: return
-    val overlayMap = chordMapByInstrument[overlayInstrument]
-      ?: chordMapByInstrument["piano"]
-      ?: return
 
     val backingNotes = (backingMap[chord] ?: return).map { note ->
       if (lowerBackingOctave) shiftNoteFileOctave(note, -1, chordInstrument) else note
     }
-    val overlayChordNotes = overlayMap[chord] ?: return
-    val overlayIndex = when (overlayTone) {
-      VoicingTone.ROOT -> 0
-      VoicingTone.THIRD -> 1
-      VoicingTone.FIFTH -> 2
-    }
-    val overlayNoteBase = overlayChordNotes.getOrNull(overlayIndex) ?: return
-    val overlayNote = if (raiseOverlayOctave) {
-      shiftNoteFileOctave(overlayNoteBase, +1, overlayInstrument)
-    } else {
-      overlayNoteBase
-    }
+    val overlayNote = resolveOverlayNote(
+      chord = chord,
+      overlayInstrument = overlayInstrument,
+      overlayTone = overlayTone,
+      raiseOverlayOctave = raiseOverlayOctave
+    ) ?: return
 
     val players = mutableListOf<MediaPlayer>()
     backingNotes.forEach { noteFile ->
@@ -1303,7 +1384,8 @@ class AssetPlayer(private val context: Context) {
     overlayTone: VoicingTone,
     lowerBackingOctave: Boolean = false,
     raiseOverlayOctave: Boolean = false,
-    arpeggioGapMs: Long = 500L
+    arpeggioGapMs: Long = 500L,
+    includeOverlayInArpeggio: Boolean = false
   ) {
     val backingMap = chordMapByInstrument[chordInstrument]
       ?: chordMapByInstrument["guitar-acoustic"]
@@ -1314,6 +1396,18 @@ class AssetPlayer(private val context: Context) {
     for (noteFile in backingNotes) {
       playSingleNote(chordInstrument, noteFile)
       delay(arpeggioGapMs)
+    }
+    if (includeOverlayInArpeggio) {
+      val overlayNote = resolveOverlayNote(
+        chord = chord,
+        overlayInstrument = overlayInstrument,
+        overlayTone = overlayTone,
+        raiseOverlayOctave = raiseOverlayOctave
+      )
+      if (overlayNote != null) {
+        playSingleNote(overlayInstrument, overlayNote)
+        delay(arpeggioGapMs)
+      }
     }
     delay(220)
     playChordWithOverlay(
@@ -1341,6 +1435,36 @@ class AssetPlayer(private val context: Context) {
     }
   }
 
+  private fun resolveOverlayNote(
+    chord: String,
+    overlayInstrument: String,
+    overlayTone: VoicingTone,
+    raiseOverlayOctave: Boolean
+  ): String? {
+    val overlayMap = chordMapByInstrument[overlayInstrument]
+      ?: chordMapByInstrument["piano"]
+      ?: return null
+    val semitoneOffset = semitonesByTone[overlayTone] ?: 0
+
+    val chordCandidates = listOf(chord, toLowChordVariant(chord)).distinct()
+    for (chordCandidate in chordCandidates) {
+      val overlayChordNotes = overlayMap[chordCandidate] ?: continue
+      val rootNote = overlayChordNotes.firstOrNull() ?: continue
+      val transposed = shiftNoteFileSemitones(rootNote, semitoneOffset) ?: continue
+      val octaveDeltas = if (raiseOverlayOctave) {
+        listOf(+1, 0, -1, -2)
+      } else {
+        listOf(0, -1, -2)
+      }
+      for (delta in octaveDeltas) {
+        val candidate = shiftNoteFileOctaveOrNull(transposed, delta, overlayInstrument)
+        if (candidate != null) return candidate
+      }
+    }
+    Log.w("AUDIO", "No overlay note found for chord=$chord tone=$overlayTone instrument=$overlayInstrument")
+    return null
+  }
+
   private fun shiftNoteFileOctave(noteFile: String, delta: Int, instrument: String): String {
     val match = Regex("^([A-G]s?)(\\d)\\.mp3$").find(noteFile) ?: return noteFile
     val noteName = match.groupValues[1]
@@ -1349,6 +1473,42 @@ class AssetPlayer(private val context: Context) {
     if (shiftedOctave < 0) return noteFile
     val shifted = "$noteName$shiftedOctave.mp3"
     return if (assetExists("$instrument/$shifted")) shifted else noteFile
+  }
+
+  private fun shiftNoteFileOctaveOrNull(noteFile: String, delta: Int, instrument: String): String? {
+    val match = Regex("^([A-G]s?)(\\d)\\.mp3$").find(noteFile) ?: return null
+    val noteName = match.groupValues[1]
+    val octave = match.groupValues[2].toIntOrNull() ?: return null
+    val shiftedOctave = octave + delta
+    if (shiftedOctave < 0) return null
+    val shifted = "$noteName$shiftedOctave.mp3"
+    return if (assetExists("$instrument/$shifted")) shifted else null
+  }
+
+  private fun shiftNoteFileSemitones(noteFile: String, semitones: Int): String? {
+    val match = Regex("^([A-G]s?)(\\d)\\.mp3$").find(noteFile) ?: return null
+    val noteName = match.groupValues[1]
+    val octave = match.groupValues[2].toIntOrNull() ?: return null
+    val baseIndex = noteNames.indexOf(noteName)
+    if (baseIndex < 0) return null
+
+    val total = baseIndex + semitones
+    val octaveShift = Math.floorDiv(total, 12)
+    val noteIndex = Math.floorMod(total, 12)
+    val shiftedOctave = octave + octaveShift
+    if (shiftedOctave < 0) return null
+
+    return "${noteNames[noteIndex]}$shiftedOctave.mp3"
+  }
+
+  private fun toLowChordVariant(chord: String): String {
+    if (chord.startsWith("lo")) return chord
+    return when (chord) {
+      "4" -> "lo4"
+      "5" -> "lo5"
+      "6" -> "lo6"
+      else -> chord
+    }
   }
 
   private fun assetExists(assetPath: String): Boolean {
