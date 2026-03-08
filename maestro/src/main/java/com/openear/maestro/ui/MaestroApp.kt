@@ -38,6 +38,7 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
   val selectedSnippetAssetPath by viewModel.selectedSnippetAssetPath.collectAsState()
   val loopProgressionLabels by viewModel.loopProgressionLabels.collectAsState()
   val isSnippetRecording by viewModel.isSnippetRecording.collectAsState()
+  val recordingFolder by viewModel.recordingFolder.collectAsState()
   val voicingEnabled by viewModel.voicingEnabled.collectAsState()
   val voicingOverlayPolicy by viewModel.voicingOverlayPolicy.collectAsState()
   val fixedVoicingTone by viewModel.fixedVoicingTone.collectAsState()
@@ -54,6 +55,7 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
   var referenceInstrumentExpanded by remember { mutableStateOf(false) }
   var selectedProgressionIndex by remember { mutableStateOf(0) }
   var recordingSnippetExpanded by remember { mutableStateOf(false) }
+  var recordingFolderExpanded by remember { mutableStateOf(false) }
   var snippetNameText by remember { mutableStateOf("") }
 
   val selectedSnippet = snippetOptions.firstOrNull { it.assetPath == selectedSnippetAssetPath }
@@ -92,6 +94,27 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
 
       Button(onClick = { viewModel.playSelectedSnippet() }) {
         Text("Play Selected")
+      }
+
+      Row {
+        Text("Folder ")
+        OutlinedButton(onClick = { recordingFolderExpanded = true }) {
+          Text(recordingFolder.directoryName)
+        }
+        DropdownMenu(
+          expanded = recordingFolderExpanded,
+          onDismissRequest = { recordingFolderExpanded = false }
+        ) {
+          RecordingFolder.entries.forEach { folder ->
+            DropdownMenuItem(
+              text = { Text(folder.directoryName) },
+              onClick = {
+                viewModel.setRecordingFolder(folder)
+                recordingFolderExpanded = false
+              }
+            )
+          }
+        }
       }
 
       Button(onClick = { viewModel.toggleSnippetRecording(snippetNameText) }) {
@@ -318,15 +341,15 @@ fun MaestroApp(viewModel: MaestroViewModel = viewModel()) {
 
     Row {
       Button(onClick = { viewModel.playReferenceChord("1") }) { Text("Play I") }
-      Button(onClick = { viewModel.playReferenceChord("b4") }) { Text("Play bIV") }
+      Button(onClick = { viewModel.playReferenceChord("lo4") }) { Text("Play loIV") }
     }
     Row {
       Button(onClick = { viewModel.playReferenceChord("4") }) { Text("Play IV") }
-      Button(onClick = { viewModel.playReferenceChord("b5") }) { Text("Play bV") }
+      Button(onClick = { viewModel.playReferenceChord("lo5") }) { Text("Play loV") }
     }
     Row {
       Button(onClick = { viewModel.playReferenceChord("5") }) { Text("Play V") }
-      Button(onClick = { viewModel.playReferenceChord("b6") }) { Text("Play bVI") }
+      Button(onClick = { viewModel.playReferenceChord("lo6") }) { Text("Play loVI") }
     }
     Row {
       Button(onClick = { viewModel.playReferenceChord("6") }) { Text("Play vi") }

@@ -45,11 +45,14 @@ class MaestroViewModel : ViewModel() {
   val selectedSnippetAssetPath: StateFlow<String> = _selectedSnippetAssetPath.asStateFlow()
 
   private val _loopProgressionLabels =
-    MutableStateFlow(progressionsWithFlats().map { it.joinToString("-") })
+    MutableStateFlow(progressionsWithLowDegrees().map { it.joinToString("-") })
   val loopProgressionLabels: StateFlow<List<String>> = _loopProgressionLabels.asStateFlow()
 
   private val _isSnippetRecording = MutableStateFlow(false)
   val isSnippetRecording: StateFlow<Boolean> = _isSnippetRecording.asStateFlow()
+
+  private val _recordingFolder = MutableStateFlow(RecordingFolder.SONG_SAMPLES)
+  val recordingFolder: StateFlow<RecordingFolder> = _recordingFolder.asStateFlow()
 
   private val _voicingEnabled = MutableStateFlow(false)
   val voicingEnabled: StateFlow<Boolean> = _voicingEnabled.asStateFlow()
@@ -78,7 +81,7 @@ class MaestroViewModel : ViewModel() {
 
   private val random = Random(System.currentTimeMillis())
 
-  private val progressions = progressionsWithFlats()
+  private val progressions = progressionsWithLowDegrees()
 
   private var burstPlan: List<List<String>> = emptyList()
   private var performanceRecords: List<PerformanceRecord> = emptyList()
@@ -142,6 +145,10 @@ class MaestroViewModel : ViewModel() {
     _voicingTaskMode.value = mode
   }
 
+  fun setRecordingFolder(folder: RecordingFolder) {
+    _recordingFolder.value = folder
+  }
+
   fun playReferenceChord(chord: String) {
     viewModelScope.launch {
       if (recordingActive) {
@@ -185,7 +192,11 @@ class MaestroViewModel : ViewModel() {
 
     if (!::assetPlayer.isInitialized) return
     val safeBase = sanitizeSnippetBaseName(baseName.ifBlank { "snippet_new" })
-    val targetFile = createUniqueSnippetFile(assetPlayer.getAppContext(), safeBase)
+    val targetFile = createUniqueSnippetFile(
+      context = assetPlayer.getAppContext(),
+      baseName = safeBase,
+      folder = _recordingFolder.value
+    )
     targetFile.parentFile?.mkdirs()
 
     try {
@@ -282,7 +293,11 @@ class MaestroViewModel : ViewModel() {
       return
     }
 
-    val renamed = createUniqueSnippetFile(assetPlayer.getAppContext(), sanitizeSnippetBaseName(newLabel.trim()))
+    val renamed = createUniqueFileInDir(
+      dir = file.parentFile ?: return,
+      baseName = sanitizeSnippetBaseName(newLabel.trim()),
+      extension = file.extension.ifBlank { "m4a" }
+    )
     val success = file.renameTo(renamed)
     if (!success) {
       _uiState.value = _uiState.value.copy(
@@ -501,6 +516,7 @@ class MaestroViewModel : ViewModel() {
     var explicitGuessCount = 0
     var wrongGuessCount = 0
     var solved = false
+    var exhaustedAttempts = false
 
     val questionInstrument = nextPlaybackInstrument()
     val isChordToneTask = _voicingEnabled.value && _voicingTaskMode.value == VoicingTaskMode.CHORD_TONE
@@ -518,7 +534,7 @@ class MaestroViewModel : ViewModel() {
       progression
     }
 
-    while (recordingActive && !solved) {
+    while (recordingActive && !solved && !exhaustedAttempts) {
       waitForQuizPauseWindowIfNeeded()
       playProgression(progression, questionInstrument, forcedVoicingTone = questionTone)
 
@@ -565,6 +581,25 @@ class MaestroViewModel : ViewModel() {
             heardTranscription =
               if (listenResult.heard.isEmpty()) "" else "I heard: ${listenResult.heard.joinToString("-")}"
           )
+
+          if (wrongGuessCount >= MAX_WRONG_GUESSES_BEFORE_REVEAL) {
+            exhaustedAttempts = true
+            val answerText = expectedAnswer.joinToString("-")
+            _uiState.value = _uiState.value.copy(
+              exerciseState = ExerciseState.FEEDBACK,
+              userMessage = "Answer: $answerText",
+              heardTranscription = "Answer: $answerText"
+            )
+            updateTranscriptionResult("Answer revealed: $answerText")
+            val missingPromptWords = assetPlayer.playSpokenAnswerTokens(expectedAnswer)
+            if (missingPromptWords.isNotEmpty()) {
+              val missingPromptFiles = missingPromptWords.joinToString(", ") { "${it}.mp3" }
+              updateTranscriptionResult(
+                "Could not find $missingPromptFiles"
+              )
+            }
+            delay(1200)
+          }
         }
 
         is ListenAttemptResult.Correct -> {
@@ -591,13 +626,24 @@ class MaestroViewModel : ViewModel() {
     suspendCancellableCoroutine { cont ->
       val deferred = CompletableDeferred<ListenAttemptResult>()
       activeListenDeferred = deferred
+      var latestTranscription = "<empty>"
+      var latestParsed = "<none>"
+
+      fun publishListenDebug() {
+        updateTranscriptionResult(
+          "Transcribed: $latestTranscription\nParsed: $latestParsed"
+        )
+      }
 
       port.beginListening(
         expectedProgression = expectedProgression,
         onTranscription = { transcription ->
-          updateTranscriptionResult(
-            "Transcribed: ${transcription.ifBlank { "<empty>" }}"
-          )
+          latestTranscription = transcription.ifBlank { "<empty>" }
+          publishListenDebug()
+        },
+        onParseDebug = { parseDebug ->
+          latestParsed = parseDebug.removePrefix("Parsed: ").ifBlank { "<none>" }
+          publishListenDebug()
         },
         onRepeat = {
           deferred.complete(ListenAttemptResult.Repeat)
@@ -783,15 +829,16 @@ class MaestroViewModel : ViewModel() {
     private const val MIN_BURST_SIZE = 1
     private const val MAX_BURST_SIZE = 50
     private const val DEFAULT_BURST_SIZE = 10
+    private const val MAX_WRONG_GUESSES_BEFORE_REVEAL = 4
 
-    private fun progressionsWithFlats(): List<List<String>> = listOf(
+    private fun progressionsWithLowDegrees(): List<List<String>> = listOf(
       listOf("1", "4", "5", "4"),
       listOf("1", "5", "1", "4"),
       listOf("5", "4", "1", "4"),
       listOf("5", "4", "5", "1"),
-      listOf("1", "b4"),
-      listOf("1", "b5"),
-      listOf("1", "b4", "b5", "1")
+      listOf("1", "lo4"),
+      listOf("1", "lo5"),
+      listOf("1", "lo4", "lo5", "1")
     )
 
     private fun defaultSnippetOptions(): List<ProgressionSnippet> = listOf(
@@ -844,12 +891,16 @@ class MaestroViewModel : ViewModel() {
     if (recordedPath != null) {
       val file = File(recordedPath)
       if (file.exists()) {
+        file.setReadable(true, false)
+        file.setWritable(true, false)
         val progression = inferProgressionFromFileName(file.nameWithoutExtension)
+        val folder = RecordingFolder.fromDirectoryName(file.parentFile?.name)
         val snippet = ProgressionSnippet(
           assetPath = file.absolutePath,
-          displayName = file.nameWithoutExtension,
+          displayName = "${folder.directoryName}/${file.nameWithoutExtension}",
           progression = progression,
-          source = SnippetSource.FILE
+          source = SnippetSource.FILE,
+          recordingFolder = folder
         )
         _snippetOptions.value = _snippetOptions.value + snippet
         _selectedSnippetAssetPath.value = snippet.assetPath
@@ -868,40 +919,67 @@ class MaestroViewModel : ViewModel() {
       .ifBlank { "snippet_new" }
   }
 
-  private fun recordedSnippetsDir(context: Context): File =
-    File(context.filesDir, "progression-snippets-recorded")
+  private fun userAudioBaseDir(context: Context): File {
+    val externalMediaBase = context.externalMediaDirs.firstOrNull()
+    return if (externalMediaBase != null) {
+      File(externalMediaBase, "maestro-user-audio")
+    } else {
+      File(context.filesDir, "maestro-user-audio")
+    }
+  }
 
-  private fun createUniqueSnippetFile(context: Context, baseName: String): File {
-    val dir = recordedSnippetsDir(context)
+  private fun recordedSnippetsDir(context: Context, folder: RecordingFolder): File =
+    File(userAudioBaseDir(context), folder.directoryName)
+
+  private fun createUniqueSnippetFile(
+    context: Context,
+    baseName: String,
+    folder: RecordingFolder
+  ): File {
+    val dir = recordedSnippetsDir(context, folder)
+    return createUniqueFileInDir(dir, baseName, "m4a")
+  }
+
+  private fun createUniqueFileInDir(
+    dir: File,
+    baseName: String,
+    extension: String
+  ): File {
     dir.mkdirs()
     var suffix = 1
-    var candidate = File(dir, "$baseName.m4a")
+    var candidate = File(dir, "$baseName.$extension")
     while (candidate.exists()) {
       suffix += 1
-      candidate = File(dir, "${baseName}_$suffix.m4a")
+      candidate = File(dir, "${baseName}_$suffix.$extension")
     }
     return candidate
   }
 
   private fun loadRecordedSnippets(context: Context): List<ProgressionSnippet> {
-    val dir = recordedSnippetsDir(context)
-    if (!dir.exists()) return emptyList()
-    return dir.listFiles()
-      ?.filter { it.isFile && it.extension.equals("m4a", ignoreCase = true) }
-      ?.sortedBy { it.name.lowercase() }
-      ?.map { file ->
-        ProgressionSnippet(
-          assetPath = file.absolutePath,
-          displayName = file.nameWithoutExtension,
-          progression = inferProgressionFromFileName(file.nameWithoutExtension),
-          source = SnippetSource.FILE
-        )
+    return RecordingFolder.entries.flatMap { folder ->
+      val dir = recordedSnippetsDir(context, folder)
+      if (!dir.exists()) {
+        emptyList()
+      } else {
+        dir.listFiles()
+          ?.filter { it.isFile && (it.extension.equals("m4a", ignoreCase = true) || it.extension.equals("mp3", ignoreCase = true)) }
+          ?.sortedBy { it.name.lowercase() }
+          ?.map { file ->
+            ProgressionSnippet(
+              assetPath = file.absolutePath,
+              displayName = "${folder.directoryName}/${file.nameWithoutExtension}",
+              progression = inferProgressionFromFileName(file.nameWithoutExtension),
+              source = SnippetSource.FILE,
+              recordingFolder = folder
+            )
+          }
+          ?: emptyList()
       }
-      ?: emptyList()
+    }
   }
 
   private fun inferProgressionFromFileName(name: String): String {
-    val p = Regex("(\\d+b?\\d*|b\\d)(?:[_-](\\d+b?\\d*|b\\d)){1,4}").find(name)
+    val p = Regex("((?:lo|b)?\\d)(?:[_-](?:lo|b)?\\d){1,4}").find(name.lowercase())
     return p?.value?.replace("_", "-") ?: "custom"
   }
 }
@@ -910,12 +988,25 @@ data class ProgressionSnippet(
   val assetPath: String,
   val displayName: String,
   val progression: String,
-  val source: SnippetSource
+  val source: SnippetSource,
+  val recordingFolder: RecordingFolder? = null
 )
 
 enum class SnippetSource {
   ASSET,
   FILE
+}
+
+enum class RecordingFolder(val directoryName: String) {
+  SONG_SAMPLES("song_samples"),
+  SPEECH("speech"),
+  VOICE("voice");
+
+  companion object {
+    fun fromDirectoryName(name: String?): RecordingFolder {
+      return entries.firstOrNull { it.directoryName == name } ?: SONG_SAMPLES
+    }
+  }
 }
 
 enum class VoicingOverlayPolicy {
@@ -963,10 +1054,10 @@ class AssetPlayer(private val context: Context) {
       "5" to listOf("G4.mp3", "B4.mp3", "D5.mp3"),
       // raised one octave from prior baseline
       "6" to listOf("A4.mp3", "C5.mp3", "E5.mp3"),
-      "b4" to listOf("F3.mp3", "A3.mp3", "C4.mp3"),
-      "b5" to listOf("G3.mp3", "B3.mp3", "D4.mp3"),
+      "lo4" to listOf("F3.mp3", "A3.mp3", "C4.mp3"),
+      "lo5" to listOf("G3.mp3", "B3.mp3", "D4.mp3"),
       // raised one octave from prior baseline
-      "b6" to listOf("A3.mp3", "C4.mp3", "E4.mp3")
+      "lo6" to listOf("A3.mp3", "C4.mp3", "E4.mp3")
     ),
     "guitar-acoustic" to mapOf(
       "1" to listOf("C4.mp3", "E4.mp3", "G4.mp3"),
@@ -974,9 +1065,9 @@ class AssetPlayer(private val context: Context) {
       "5" to listOf("G4.mp3", "B4.mp3", "D5.mp3"),
       // guitar set has no E5 sample, so use highest available E4
       "6" to listOf("A4.mp3", "C5.mp3", "E4.mp3"),
-      "b4" to listOf("F3.mp3", "A3.mp3", "C4.mp3"),
-      "b5" to listOf("G3.mp3", "B3.mp3", "D4.mp3"),
-      "b6" to listOf("A3.mp3", "C4.mp3", "E4.mp3")
+      "lo4" to listOf("F3.mp3", "A3.mp3", "C4.mp3"),
+      "lo5" to listOf("G3.mp3", "B3.mp3", "D4.mp3"),
+      "lo6" to listOf("A3.mp3", "C4.mp3", "E4.mp3")
     )
   )
 
@@ -1127,6 +1218,80 @@ class AssetPlayer(private val context: Context) {
         player.release()
         if (cont.isActive) cont.resume(Unit)
       }
+    }
+  }
+
+  suspend fun playSpokenAnswerTokens(tokens: List<String>): List<String> {
+    val spokenTokens = tokens.flatMap { token ->
+      when {
+        token.startsWith("lo") && token.length > 2 -> listOf(token.removePrefix("lo"))
+        token.startsWith("b") && token.length > 1 -> listOf(token.removePrefix("b"))
+        token.startsWith("#") && token.length > 1 -> listOf("sharp", token.removePrefix("#"))
+        else -> listOf(token)
+      }
+    }.mapNotNull { toSpokenWord(it) }
+
+    val missing = mutableListOf<String>()
+    for (word in spokenTokens) {
+      val played = playPromptWordIfExists(word)
+      if (!played) {
+        Log.d("AUDIO", "Prompt word missing for '$word' (skipping)")
+        missing += word
+      }
+      delay(120)
+    }
+    return missing
+  }
+
+  private suspend fun playPromptWordIfExists(word: String): Boolean {
+    val assetPaths = listOf(
+      "voice-prompts/$word.mp3",
+      "speech/$word.mp3",
+      "prompts/$word.mp3"
+    )
+    for (assetPath in assetPaths) {
+      if (assetExists(assetPath)) {
+        playAssetClip(assetPath)
+        return true
+      }
+    }
+
+    val userAudioBase = userAudioBaseDir()
+    val recordedCandidates = listOf(
+      File(userAudioBase, "speech/$word.m4a"),
+      File(userAudioBase, "speech/$word.mp3"),
+      File(userAudioBase, "voice/$word.m4a"),
+      File(userAudioBase, "voice/$word.mp3"),
+      File(userAudioBase, "song_samples/$word.m4a"),
+      File(userAudioBase, "song_samples/$word.mp3")
+    )
+    recordedCandidates.firstOrNull { it.exists() }?.let { file ->
+      playFileClip(file.absolutePath)
+      return true
+    }
+    return false
+  }
+
+  private fun toSpokenWord(token: String): String? {
+    return when (token.lowercase()) {
+      "1" -> "one"
+      "2" -> "two"
+      "3" -> "three"
+      "4" -> "four"
+      "5" -> "five"
+      "6" -> "six"
+      "7" -> "seven"
+      "sharp" -> "sharp"
+      else -> null
+    }
+  }
+
+  private fun userAudioBaseDir(): File {
+    val externalMediaBase = context.externalMediaDirs.firstOrNull()
+    return if (externalMediaBase != null) {
+      File(externalMediaBase, "maestro-user-audio")
+    } else {
+      File(context.filesDir, "maestro-user-audio")
     }
   }
 

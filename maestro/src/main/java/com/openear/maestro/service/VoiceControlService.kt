@@ -23,8 +23,10 @@ import kotlinx.coroutines.sync.withLock
 
 
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.ToneGenerator
 import java.io.File
 import kotlin.math.sqrt
 import java.util.concurrent.Executors
@@ -49,6 +51,7 @@ class VoiceControlService : Service() {
     fun beginListening(
       expectedProgression: List<String>,
       onTranscription: (String) -> Unit,
+      onParseDebug: (String) -> Unit,
       onRepeat: () -> Unit,
       onCorrect: () -> Unit,
       onIncorrect: (List<String>) -> Unit
@@ -78,6 +81,7 @@ class VoiceControlService : Service() {
   private lateinit var whisper: Whisper
   private var whisperContext: Long = 0L
   private val whisperReady = CompletableDeferred<Unit>()
+  @Volatile private var modelStatusMessage: String = "Initializing voice model..."
 
   private val whisperMutex = Mutex()
 
@@ -86,6 +90,7 @@ class VoiceControlService : Service() {
     override fun beginListening(
       expectedProgression: List<String>,
       onTranscription: (String) -> Unit,
+      onParseDebug: (String) -> Unit,
       onRepeat: () -> Unit,
       onCorrect: () -> Unit,
       onIncorrect: (List<String>) -> Unit
@@ -94,21 +99,46 @@ class VoiceControlService : Service() {
       listenJob?.cancel()
 
       listenJob = scope.launch {
-        delay(LISTEN_DELAY_MS)
-        val result = collectAndProcessOnce(expectedProgression)
-        when (result) {
-          is ListenResult.Correct -> {
-            onTranscription(result.transcription)
-            onCorrect()
+        try {
+          delay(LISTEN_DELAY_MS)
+          val result = collectAndProcessOnce(expectedProgression)
+          when (result) {
+            is ListenResult.Correct -> {
+              onTranscription(result.transcription)
+              onParseDebug(
+                formatParseDebugLine(
+                  normalized = result.normalized,
+                  usedFallback = result.usedFallback
+                )
+              )
+              onCorrect()
+            }
+            is ListenResult.Incorrect -> {
+              onTranscription(result.transcription)
+              onParseDebug(
+                formatParseDebugLine(
+                  normalized = result.normalized,
+                  usedFallback = result.usedFallback
+                )
+              )
+              onIncorrect(result.transcribed)
+            }
+            is ListenResult.Repeat -> {
+              onTranscription(result.transcription)
+              onParseDebug(
+                formatParseDebugLine(
+                  normalized = result.normalized,
+                  usedFallback = result.usedFallback
+                )
+              )
+              onRepeat()
+            }
           }
-          is ListenResult.Incorrect -> {
-            onTranscription(result.transcription)
-            onIncorrect(result.transcribed)
-          }
-          is ListenResult.Repeat -> {
-            onTranscription(result.transcription)
-            onRepeat()
-          }
+        } catch (t: Throwable) {
+          val msg = "Voice unavailable: ${t.message ?: "unknown error"}"
+          Log.e(TAG, msg, t)
+          onTranscription(msg)
+          onRepeat()
         }
       }
     }
@@ -126,6 +156,9 @@ class VoiceControlService : Service() {
 
     val modelFile = File(MODEL_PATH)
     Log.i(TAG, "Model path=$MODEL_PATH exists=${modelFile.exists()} size=${modelFile.length()}")
+    if (!modelFile.exists()) {
+      modelStatusMessage = "Model missing at $MODEL_PATH"
+    }
 
     scope.launch(whisperDispatcher) {
       try {
@@ -152,8 +185,10 @@ class VoiceControlService : Service() {
           TAG,
           "Whisper context initialized: ctx=$whisperContext thread=${Thread.currentThread().id}"
         )
+        modelStatusMessage = "Voice model ready"
         whisperReady.complete(Unit)
       } catch (t: Throwable) {
+        modelStatusMessage = "Voice model init failed: ${t.message ?: "unknown error"}"
         whisperReady.completeExceptionally(t)
         Log.e(TAG, "Failed to initialize Whisper context", t)
       }
@@ -168,7 +203,7 @@ class VoiceControlService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     startForeground(
       VOICE_NOTIFICATION_ID,
-      buildNotification("Listening for your answer…")
+      buildNotification(modelStatusMessage)
     )
     return START_STICKY
   }
@@ -190,11 +225,21 @@ class VoiceControlService : Service() {
 //  }
 
   private sealed class ListenResult {
-    data class Correct(val transcription: String) : ListenResult()
-    data class Repeat(val transcription: String) : ListenResult()
+    data class Correct(
+      val transcription: String,
+      val normalized: List<String>,
+      val usedFallback: Boolean
+    ) : ListenResult()
+    data class Repeat(
+      val transcription: String,
+      val normalized: List<String> = emptyList(),
+      val usedFallback: Boolean = false
+    ) : ListenResult()
     data class Incorrect(
       val transcribed: List<String>,
-      val transcription: String
+      val transcription: String,
+      val normalized: List<String>,
+      val usedFallback: Boolean
     ) : ListenResult()
   }
   private suspend fun collectAndProcessOnce(
@@ -202,7 +247,11 @@ class VoiceControlService : Service() {
   ): ListenResult {
 
     // Ensure whisper is ready before recording/transcribing
-    whisperReady.await()
+    try {
+      whisperReady.await()
+    } catch (_: Throwable) {
+      return ListenResult.Repeat(modelStatusMessage)
+    }
 
     val audioData = recordAudioSample()
 
@@ -225,20 +274,40 @@ class VoiceControlService : Service() {
     Log.i(TAG, "Transcription='$transcription'")
 
     val parsed = commandParser.parse(transcription)
-    if (parsed !is CommandParser.Result.Answer) {
-      logRepeat("unparsed transcription='$transcription'")
-      return ListenResult.Repeat(transcription)
+    var usedFallback = false
+    val normalized = when (parsed) {
+      is CommandParser.Result.Answer -> normalizeAnswerTokens(parsed.tokens)
+      else -> {
+        val fallback = extractAnswerTokensFallback(transcription)
+        if (fallback.isNotEmpty()) {
+          usedFallback = true
+          Log.d(TAG, "Fallback token extraction used: $fallback")
+        } else {
+          logRepeat("unparsed transcription='$transcription'")
+          return ListenResult.Repeat(transcription)
+        }
+        fallback
+      }
     }
-
-    val normalized = normalizeAnswerTokens(parsed.tokens)
 
     return if (evaluator.isCorrect(expectedProgression, normalized)) {
       Log.i(TAG, "ListenResult=CORRECT normalized=$normalized")
-      ListenResult.Correct(transcription)
+      ListenResult.Correct(transcription, normalized, usedFallback)
     } else {
       logIncorrect(transcription, normalized)
-      ListenResult.Incorrect(normalized, transcription)
+      ListenResult.Incorrect(
+        transcribed = normalized,
+        transcription = transcription,
+        normalized = normalized,
+        usedFallback = usedFallback
+      )
     }
+  }
+
+  private fun formatParseDebugLine(normalized: List<String>, usedFallback: Boolean): String {
+    val tokensText = if (normalized.isEmpty()) "<none>" else normalized.joinToString("-")
+    val source = if (usedFallback) "fallback" else "parser"
+    return "Parsed: $tokensText ($source)"
   }
 
   private fun normalizeToken(token: String): String {
@@ -254,6 +323,8 @@ class VoiceControlService : Service() {
       "five" -> "5"
       "six" -> "6"
       "seven" -> "7"
+      "low" -> "lo"
+      "lower" -> "lo"
       "flat" -> "b"
       "sharp" -> "#"
       else -> cleaned
@@ -262,12 +333,32 @@ class VoiceControlService : Service() {
 
   private fun normalizeAnswerTokens(tokens: List<String>): List<String> {
     val raw = tokens.map { normalizeToken(it) }.filter { it.isNotBlank() }
+    return mergeModifierTokens(raw)
+  }
+
+  private fun extractAnswerTokensFallback(transcription: String): List<String> {
+    val raw = transcription
+      .lowercase()
+      .replace(Regex("[^a-z0-9#\\s]"), " ")
+      .split("\\s+".toRegex())
+      .filter { it.isNotBlank() }
+      .map { normalizeToken(it) }
+      .filter { it.isNotBlank() }
+
+    return mergeModifierTokens(raw)
+      .filter { it.matches(Regex("(?:lo|b|#)?[1-7]")) }
+  }
+
+  private fun mergeModifierTokens(raw: List<String>): List<String> {
     val output = mutableListOf<String>()
     var i = 0
     while (i < raw.size) {
       val current = raw[i]
       val next = raw.getOrNull(i + 1)
-      if ((current == "b" || current == "#") && next != null && next.matches(Regex("[1-7]"))) {
+      if ((current == "b" || current == "#" || current == "lo") &&
+        next != null &&
+        next.matches(Regex("[1-7]"))
+      ) {
         output += "$current$next"
         i += 2
         continue
@@ -280,6 +371,8 @@ class VoiceControlService : Service() {
 
 
   private suspend fun recordAudioSample(): FloatArray {
+    playBeep(ToneGenerator.TONE_PROP_BEEP, 60)
+
     val totalSamples = (SAMPLE_RATE * (LISTEN_WINDOW_MS / 1000f)).toInt()
     val audioBuffer = ShortArray(totalSamples)
 
@@ -321,6 +414,7 @@ class VoiceControlService : Service() {
     } finally {
       recorder.stop()
       recorder.release()
+      playBeep(ToneGenerator.TONE_PROP_ACK, 60)
     }
 
     val floatBuffer = FloatArray(totalSamples)
@@ -381,6 +475,17 @@ class VoiceControlService : Service() {
       TAG,
       "ListenResult=INCORRECT transcription='$transcription' normalized=$normalized — retrying"
     )
+  }
+
+  private fun playBeep(tone: Int, durationMs: Int) {
+    runCatching {
+      val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 25)
+      try {
+        tg.startTone(tone, durationMs)
+      } finally {
+        tg.release()
+      }
+    }
   }
 }
 

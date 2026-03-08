@@ -28,9 +28,9 @@ class ProgressionAnswerEvaluator {
     val trimmed = token.trim().lowercase()
     if (trimmed.isBlank()) return ""
 
-    // Position prefixes (b/#) are ignored for answer grading:
-    // b4, #4, and 4 are all treated as degree 4.
-    val stripped = trimmed.removePrefix("b").removePrefix("#")
+    // Position prefixes (lo/b/#) are ignored for answer grading:
+    // lo4, b4, #4, and 4 are all treated as degree 4.
+    val stripped = trimmed.removePrefix("lo").removePrefix("b").removePrefix("#")
     return stripped
   }
 
